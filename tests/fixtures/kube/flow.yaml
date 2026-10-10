@@ -1,0 +1,4 @@
+contexts:
+- name: flowy
+  context: {cluster: c, namespace: hidden}
+current-context: flowy

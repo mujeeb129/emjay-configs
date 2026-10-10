@@ -1,0 +1,28 @@
+apiVersion: v1
+clusters:
+- cluster:
+    extensions:
+    - extension:
+        provider: minikube.sigs.k8s.io
+        version: v1.33.0
+      name: cluster_info
+    server: https://192.168.49.2:8443
+  name: minikube
+contexts:
+- context:
+    cluster: minikube
+    extensions:
+    - extension:
+        provider: minikube.sigs.k8s.io
+        version: v1.33.0
+      name: context_info
+    namespace: kube-system
+    user: minikube
+  name: minikube
+current-context: minikube
+kind: Config
+preferences: {}
+users:
+- name: minikube
+  user:
+    client-certificate: /home/u/.minikube/profiles/minikube/client.crt

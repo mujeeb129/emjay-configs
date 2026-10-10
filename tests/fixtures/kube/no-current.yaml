@@ -1,0 +1,7 @@
+apiVersion: v1
+contexts:
+- context:
+    cluster: x
+  name: x
+current-context: ""
+kind: Config

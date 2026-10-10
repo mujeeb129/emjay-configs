@@ -1,0 +1,19 @@
+# hand-written
+apiVersion: v1
+kind: Config
+current-context: "prod-eu"   # active
+contexts:
+  - name: 'staging'
+    context:
+      cluster: staging
+      namespace: web
+  - name: prod-eu
+    context:
+      user: admin
+      namespace: "payments" # team
+  # comment inside list
+clusters:
+  - name: should-not-match
+    cluster:
+      namespace: nope
+users: []

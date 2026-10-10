@@ -1,0 +1,8 @@
+apiVersion: v1
+contexts:
+- context:
+    cluster: gke_my-proj_europe-west1-b_web
+    user: gke_my-proj_europe-west1-b_web
+  name: gke_my-proj_europe-west1-b_web
+current-context: gke_my-proj_europe-west1-b_web
+kind: Config

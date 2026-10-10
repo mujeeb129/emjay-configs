@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Config
+current-context: other
+contexts:
+- context:
+    namespace: ops
+  name: shared
+- context:
+    namespace: from-b
+  name: local
