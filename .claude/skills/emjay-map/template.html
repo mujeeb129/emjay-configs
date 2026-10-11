@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{REPO}} — Codebase Map</title>
+<script src="https://cdn.tailwindcss.com/3.4.16"></script>
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs";
+  const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+  mermaid.initialize({ startOnLoad: true, theme: dark ? "dark" : "neutral", securityLevel: "loose" });
+</script>
+<style>
+  /* small custom layer for things Tailwind doesn't cover cleanly */
+  html { scroll-behavior: smooth; }
+  .mermaid { display: flex; justify-content: center; }
+  .doc-table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+  .doc-table th { text-align: left; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; padding: 0.6rem 0.75rem; }
+  .doc-table td { padding: 0.6rem 0.75rem; vertical-align: top; border-top: 1px solid rgb(231 229 228); }
+  .ref { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.75rem; color: rgb(67 56 202); text-decoration: none; overflow-wrap: anywhere; }
+  .ref:hover { text-decoration: underline; }
+  @media (prefers-color-scheme: dark) {
+    .doc-table td { border-top-color: rgb(51 65 85); }
+    .ref { color: rgb(129 140 248); }
+  }
+</style>
+</head>
+<body class="bg-stone-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 font-sans antialiased">
+<main class="max-w-5xl mx-auto px-4 sm:px-6 py-12 space-y-16">
+
+  <!-- Header: title, metadata chips, nav. No intro paragraph. -->
+  <header class="space-y-5 border-b border-stone-200 dark:border-slate-800 pb-8">
+    <p class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Onboarding guide</p>
+    <h1 class="font-serif text-4xl sm:text-5xl leading-tight">{{REPO}} — codebase map</h1>
+    <div class="flex flex-wrap gap-2 text-xs">
+      <span class="rounded-full bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300 px-3 py-1 font-semibold font-mono">{{BRANCH}} @ {{SHA}}</span>
+      <span class="rounded-full border border-stone-300 dark:border-slate-700 px-3 py-1">Author: {{AUTHOR}}</span>
+      <span class="rounded-full border border-stone-300 dark:border-slate-700 px-3 py-1">Created {{DATE}}</span>
+      <span class="rounded-full border border-stone-300 dark:border-slate-700 px-3 py-1">Updated {{UPDATED}}</span>
+      <span class="rounded-full border border-stone-300 dark:border-slate-700 px-3 py-1 font-mono">v{{VERSION}}</span>
+    </div>
+    <nav class="flex flex-wrap gap-x-5 gap-y-1 text-sm text-indigo-700 dark:text-indigo-400">
+      <a href="#overview" class="hover:underline">Overview</a>
+      <a href="#stack" class="hover:underline">Stack</a>
+      <a href="#repo" class="hover:underline">Repo map</a>
+      <a href="#architecture" class="hover:underline">Architecture</a>
+      <a href="#entrypoints" class="hover:underline">Entry points</a>
+      <a href="#flows" class="hover:underline">Key flows</a>
+      <a href="#data" class="hover:underline">Data model</a>
+      <a href="#config" class="hover:underline">Config</a>
+      <a href="#workflow" class="hover:underline">Dev workflow</a>
+      <a href="#gotchas" class="hover:underline">Gotchas</a>
+      <a href="#start" class="hover:underline">Start here</a>
+      <a href="#glossary" class="hover:underline">Glossary</a>
+      <a href="#questions" class="hover:underline">Open questions</a>
+    </nav>
+  </header>
+
+  <!-- 1. Overview: lead text + at-a-glance chips -->
+  <section id="overview" class="space-y-5">
+    <h2 class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">01 · Overview</h2>
+    <p class="font-serif text-xl sm:text-2xl leading-relaxed">{{OVERVIEW}}</p>
+    <dl class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div class="rounded-lg border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4">
+        <dt class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Language</dt>
+        <dd class="font-serif text-lg">{{LANGUAGE}}</dd>
+      </div>
+      <div class="rounded-lg border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4">
+        <dt class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Files</dt>
+        <dd class="font-serif text-lg">{{FILE_COUNT}}</dd>
+      </div>
+      <div class="rounded-lg border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4">
+        <dt class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Lines of code</dt>
+        <dd class="font-serif text-lg">{{LOC}}</dd>
+      </div>
+      <div class="rounded-lg border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4">
+        <dt class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Runs on</dt>
+        <dd class="font-serif text-lg">{{RUNTIME}}</dd>
+      </div>
+    </dl>
+  </section>
+
+  <!-- 2. Tech stack -->
+  <section id="stack" class="space-y-4">
+    <h2 class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">02 · Tech stack</h2>
+    <div class="rounded-lg border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-x-auto">
+      <table class="doc-table">
+        <thead class="bg-stone-100 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400">
+          <tr><th>Layer</th><th>Technology</th><th>Version</th><th>Where</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="font-semibold">{{LAYER}}</td>
+            <td>{{TECH}}</td>
+            <td class="font-mono text-xs">{{TECH_VERSION}}</td>
+            <td><a class="ref" data-ref="{{PATH}}" href="{{HREF}}">{{PATH}}</a></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 3. Repository map: annotated tree, 2–3 levels, only what matters -->
+  <section id="repo" class="space-y-4">
+    <h2 class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">03 · Repository map</h2>
+    <pre class="rounded-lg border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 overflow-x-auto text-sm leading-relaxed font-mono"><span class="font-semibold">{{REPO}}/</span>
+├── <span class="font-semibold">src/</span>                <span class="text-slate-400 dark:text-slate-500"># {{DIR_PURPOSE}}</span>
+│   └── main.ts         <span class="text-slate-400 dark:text-slate-500"># {{FILE_PURPOSE}}</span>
+└── README.md           <span class="text-slate-400 dark:text-slate-500"># {{FILE_PURPOSE}}</span></pre>
+  </section>
+
+  <!-- 4. Architecture: diagram first, then component cards -->
+  <section id="architecture" class="space-y-8">
+    <h2 class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">04 · Architecture</h2>
+
+    <figure class="rounded-lg border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 space-y-3">
+      <figcaption class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">System context &amp; components</figcaption>
+      <pre class="mermaid">
+flowchart LR
+  User((User)) --> Entry["Entry point"]
+  Entry --> Core["Core module"]
+  Core --> DB[(Database)]
+  Core -.-> Ext["External API"]
+  classDef entry stroke:#4f46e5,stroke-width:2px;
+  classDef external stroke:#64748b,stroke-dasharray:4 3;
+  class Entry entry
+  class Ext external
+      </pre>
+    </figure>
+
+    <!-- Optional: use instead of / beside the flowchart when the system is clearly layered. Delete if unused. -->
+    <figure class="space-y-2">
+      <figcaption class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Layers</figcaption>
+      <div class="rounded-lg border-l-4 border-indigo-500 bg-white dark:bg-slate-900 px-4 py-3 text-sm"><span class="font-semibold">{{LAYER_NAME}}</span> <span class="text-slate-600 dark:text-slate-300">— {{LAYER_ROLE}}</span></div>
+      <div class="rounded-lg border-l-4 border-indigo-300 dark:border-indigo-700 bg-white dark:bg-slate-900 px-4 py-3 text-sm"><span class="font-semibold">{{LAYER_NAME}}</span> <span class="text-slate-600 dark:text-slate-300">— {{LAYER_ROLE}}</span></div>
+      <div class="rounded-lg border-l-4 border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-4 py-3 text-sm"><span class="font-semibold">{{LAYER_NAME}}</span> <span class="text-slate-600 dark:text-slate-300">— {{LAYER_ROLE}}</span></div>
+    </figure>
+
+    <div>
+      <h3 class="font-serif text-xl mb-4">Components</h3>
+      <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <article class="rounded-lg border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 space-y-2">
+          <p class="text-xs uppercase tracking-wider font-semibold text-indigo-700 dark:text-indigo-400">{{COMPONENT}}</p>
+          <p class="text-sm">{{RESPONSIBILITY}}</p>
+          <p><a class="ref" data-ref="{{PATH}}" href="{{HREF}}">{{PATH}}</a></p>
+          <p class="text-xs text-slate-500 dark:text-slate-400"><span class="uppercase tracking-wider mr-1">Talks to</span>{{DEPENDENCIES}}</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5. Entry points -->
+  <section id="entrypoints" class="space-y-6">
+    <h2 class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">05 · Entry points</h2>
+    <div class="rounded-lg border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-x-auto">
+      <table class="doc-table">
+        <thead class="bg-stone-100 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400">
+          <tr><th>Entry point</th><th>Kind</th><th>Location</th><th>What it does</th><th>How to run</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="font-semibold">{{ENTRY_NAME}}</td>
+            <td><span class="rounded-full bg-indigo-50 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300 px-2 py-0.5 text-xs font-semibold">{{KIND}}</span></td>
+            <td><a class="ref" data-ref="{{PATH_LINE}}" href="{{HREF}}">{{PATH_LINE}}</a></td>
+            <td>{{ENTRY_DOES}}</td>
+            <td class="font-mono text-xs">{{RUN_COMMAND}}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Boot sequence of the main entry point: vertical timeline -->
+    <div>
+      <h3 class="font-serif text-xl mb-4">Startup sequence — {{MAIN_ENTRY}}</h3>
+      <ol class="relative border-l-2 border-indigo-200 dark:border-indigo-900 ml-2 space-y-5">
+        <li class="pl-6 relative">
+          <span class="absolute -left-[9px] top-1.5 h-4 w-4 rounded-full bg-indigo-600 dark:bg-indigo-400 ring-4 ring-stone-50 dark:ring-slate-950"></span>
+          <p class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Step 1</p>
+          <p class="font-semibold">{{BOOT_STEP}}</p>
+          <p class="text-sm text-slate-600 dark:text-slate-300">{{BOOT_DETAIL}} <a class="ref" data-ref="{{PATH_LINE}}" href="{{HREF}}">{{PATH_LINE}}</a></p>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- 6. Key flows: one block per flow — flowchart + sequence side by side, then the hops -->
+  <section id="flows" class="space-y-12">
+    <h2 class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">06 · Key flows</h2>
+
+    <div class="space-y-5">
+      <div class="space-y-1">
+        <h3 class="font-serif text-2xl">{{FLOW_NAME}}</h3>
+        <p class="text-sm text-slate-600 dark:text-slate-300"><span class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 mr-2">Trigger</span>{{FLOW_TRIGGER}}</p>
+      </div>
+      <div class="grid lg:grid-cols-2 gap-4">
+        <figure class="rounded-lg border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 space-y-3">
+          <figcaption class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Control flow</figcaption>
+          <pre class="mermaid">
+flowchart TD
+  A["Request received"] --> B{"Valid?"}
+  B -- yes --> C["Handle"]
+  B -- no --> E["Return error"]
+  C --> D[(Persist)]
+  classDef err stroke:#dc2626,stroke-width:2px;
+  class E err
+          </pre>
+        </figure>
+        <figure class="rounded-lg border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 space-y-3">
+          <figcaption class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Sequence</figcaption>
+          <pre class="mermaid">
+sequenceDiagram
+  participant U as User
+  participant E as Entry
+  participant C as Core
+  participant D as DB
+  U->>E: call
+  E->>C: handle()
+  C->>D: write
+  D-->>C: ok
+  C-->>E: result
+  E-->>U: response
+          </pre>
+        </figure>
+      </div>
+      <ol class="list-decimal pl-6 space-y-1.5 text-sm">
+        <li>{{HOP}} <a class="ref" data-ref="{{PATH_LINE}}" href="{{HREF}}">{{PATH_LINE}}</a></li>
+      </ol>
+      <p class="text-sm"><span class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 mr-2">Side effects</span>{{SIDE_EFFECTS}}</p>
+      <p class="text-sm"><span class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 mr-2">Errors handled at</span>{{ERROR_HANDLING}}</p>
+    </div>
+  </section>
+
+  <!-- 7. Data model -->
+  <section id="data" class="space-y-8">
+    <h2 class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">07 · Data model</h2>
+
+    <!-- If there is no database: keep this one line, delete the ER/table/migration blocks, keep "State stores". -->
+    <p class="text-sm text-slate-600 dark:text-slate-300">{{NO_DB_NOTE}}</p>
+
+    <figure class="rounded-lg border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 space-y-3">
+      <figcaption class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Entity relationships</figcaption>
+      <pre class="mermaid">
+erDiagram
+  USER ||--o{ ORDER : places
+      </pre>
+    </figure>
+
+    <!-- One article per table / collection -->
+    <article class="rounded-lg border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
+      <div class="px-5 pt-5 pb-3 space-y-1">
+        <h3 class="font-mono text-lg font-semibold">{{TABLE_NAME}}</h3>
+        <p class="text-sm text-slate-600 dark:text-slate-300">{{TABLE_PURPOSE}} <a class="ref" data-ref="{{PATH_LINE}}" href="{{HREF}}">{{PATH_LINE}}</a></p>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="doc-table">
+          <thead class="bg-stone-100 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400">
+            <tr><th>Column</th><th>Type</th><th>Null</th><th>Default</th><th>Constraints / notes</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="font-mono font-semibold">id</td>
+              <td class="font-mono text-indigo-700 dark:text-indigo-400">uuid</td>
+              <td>no</td>
+              <td class="font-mono text-xs">gen_random_uuid()</td>
+              <td><span class="rounded bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 text-xs font-semibold">PK</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="px-5 py-3 text-sm border-t border-stone-200 dark:border-slate-800"><span class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 mr-2">Indexes</span><span class="font-mono text-xs">{{INDEXES}}</span></p>
+    </article>
+
+    <div class="rounded-lg bg-amber-50 border border-amber-200 text-amber-900 dark:bg-amber-900/20 dark:border-amber-900 dark:text-amber-200 px-4 py-3 text-sm">
+      <span class="font-semibold">Migrations:</span> {{MIGRATION_NOTES}}
+    </div>
+
+    <!-- Other state: caches, queues, files, object stores, in-memory -->
+    <div>
+      <h3 class="font-serif text-xl mb-4">State stores</h3>
+      <div class="rounded-lg border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-x-auto">
+        <table class="doc-table">
+          <thead class="bg-stone-100 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400">
+            <tr><th>Store</th><th>Kind</th><th>Holds</th><th>Lifetime</th><th>Defined at</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="font-semibold">{{STORE}}</td>
+              <td>{{STORE_KIND}}</td>
+              <td>{{STORE_HOLDS}}</td>
+              <td>{{STORE_LIFETIME}}</td>
+              <td><a class="ref" data-ref="{{PATH_LINE}}" href="{{HREF}}">{{PATH_LINE}}</a></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- 8. Configuration -->
+  <section id="config" class="space-y-4">
+    <h2 class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">08 · Configuration</h2>
+    <div class="rounded-lg border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-x-auto">
+      <table class="doc-table">
+        <thead class="bg-stone-100 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400">
+          <tr><th>Setting</th><th>Default</th><th>Read at</th><th>Effect</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="font-mono font-semibold">{{SETTING}}</td>
+            <td class="font-mono text-xs">{{SETTING_DEFAULT}}</td>
+            <td><a class="ref" data-ref="{{PATH_LINE}}" href="{{HREF}}">{{PATH_LINE}}</a></td>
+            <td>{{SETTING_EFFECT}}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 9. Dev workflow: one card per task, commands copy-pasteable -->
+  <section id="workflow" class="space-y-6">
+    <h2 class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">09 · Dev workflow</h2>
+    <div class="grid sm:grid-cols-2 gap-4">
+      <article class="rounded-lg border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 space-y-2">
+        <p class="text-xs uppercase tracking-wider font-semibold text-indigo-700 dark:text-indigo-400">{{TASK}}</p>
+        <pre class="rounded bg-slate-900 text-slate-100 dark:bg-black/60 px-3 py-2 overflow-x-auto text-xs leading-relaxed"><code class="font-mono">{{COMMAND}}</code></pre>
+        <p class="text-xs text-slate-500 dark:text-slate-400">{{TASK_NOTE}}</p>
+      </article>
+    </div>
+    <div>
+      <h3 class="font-serif text-xl mb-3">Tests</h3>
+      <ul class="list-disc pl-5 space-y-1.5 text-sm">
+        <li>{{TEST_FACT}}</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 10. Conventions & gotchas -->
+  <section id="gotchas" class="space-y-4">
+    <h2 class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">10 · Conventions &amp; gotchas</h2>
+    <dl class="grid sm:grid-cols-2 gap-x-8 gap-y-4 text-sm">
+      <div class="border-l-4 border-indigo-300 dark:border-indigo-800 pl-3">
+        <dt class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">{{CONVENTION}}</dt>
+        <dd>{{CONVENTION_DETAIL}}</dd>
+      </div>
+    </dl>
+    <!-- Traps: amber callouts -->
+    <div class="rounded-lg bg-amber-50 border border-amber-200 text-amber-900 dark:bg-amber-900/20 dark:border-amber-900 dark:text-amber-200 px-4 py-3 text-sm">
+      <span class="font-semibold">Gotcha:</span> {{GOTCHA}}
+    </div>
+  </section>
+
+  <!-- 11. Start here: ordered reading list -->
+  <section id="start" class="space-y-4">
+    <h2 class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">11 · Start here</h2>
+    <ol class="relative border-l-2 border-indigo-200 dark:border-indigo-900 ml-2 space-y-4">
+      <li class="pl-6 relative">
+        <span class="absolute -left-[9px] top-1 h-4 w-4 rounded-full bg-indigo-600 dark:bg-indigo-400 ring-4 ring-stone-50 dark:ring-slate-950"></span>
+        <p><a class="ref text-sm" data-ref="{{PATH}}" href="{{HREF}}">{{PATH}}</a></p>
+        <p class="text-sm text-slate-600 dark:text-slate-300">{{WHY_READ}}</p>
+      </li>
+    </ol>
+  </section>
+
+  <!-- 12. Glossary -->
+  <section id="glossary" class="space-y-4">
+    <h2 class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">12 · Glossary</h2>
+    <dl class="grid sm:grid-cols-2 gap-x-8 gap-y-3 text-sm">
+      <div>
+        <dt class="font-semibold">{{TERM}}</dt>
+        <dd class="text-slate-600 dark:text-slate-300">{{DEFINITION}}</dd>
+      </div>
+    </dl>
+  </section>
+
+  <!-- 13. Open questions: what the mapping couldn't confirm -->
+  <section id="questions" class="space-y-4">
+    <h2 class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">13 · Open questions</h2>
+    <div class="rounded-lg border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-x-auto">
+      <table class="doc-table">
+        <thead class="bg-stone-100 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400">
+          <tr><th>#</th><th>Question</th><th>Why it matters</th><th>Where to look</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="font-mono text-slate-400">Q1</td>
+            <td class="font-semibold">{{QUESTION}}</td>
+            <td>{{IMPACT}}</td>
+            <td class="text-slate-600 dark:text-slate-300">{{WHERE_TO_LOOK}}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+</main>
+</body>
+</html>

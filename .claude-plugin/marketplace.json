@@ -1,0 +1,17 @@
+{
+  "name": "emjay",
+  "owner": {
+    "name": "Mujeeb Rahman",
+    "url": "https://github.com/mujeeb129"
+  },
+  "description": "emjay's Claude Code skills: grill a task, document the plan, map a codebase.",
+  "plugins": [
+    {
+      "name": "emjay-skills",
+      "source": "./",
+      "description": "Grill a task into decisions, turn a plan into an HTML design doc, and map a codebase into an HTML onboarding guide.",
+      "category": "engineering",
+      "keywords": ["planning", "design-doc", "onboarding", "grilling", "skills"]
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "name": "emjay-skills",
+  "version": "0.1.0",
+  "description": "Grill a task into decisions (emjay-grill), turn a plan into an HTML design doc (emjay-plan), and map a codebase into an HTML onboarding guide (emjay-map).",
+  "author": {
+    "name": "Mujeeb Rahman",
+    "url": "https://github.com/mujeeb129"
+  },
+  "repository": "https://github.com/mujeeb129/emjay-configs",
+  "keywords": ["planning", "design-doc", "onboarding", "grilling", "skills"],
+  "skills": [
+    "./.claude/skills/emjay-grill",
+    "./.claude/skills/emjay-plan",
+    "./.claude/skills/emjay-map"
+  ]
+}

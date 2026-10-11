@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{TITLE}}</title>
+<script src="https://cdn.tailwindcss.com/3.4.16"></script>
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs";
+  const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+  mermaid.initialize({ startOnLoad: true, theme: dark ? "dark" : "neutral", securityLevel: "loose" });
+</script>
+<style>
+  /* small custom layer for things Tailwind doesn't cover cleanly */
+  html { scroll-behavior: smooth; }
+  .mermaid { display: flex; justify-content: center; }
+  .doc-table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+  .doc-table th { text-align: left; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; padding: 0.6rem 0.75rem; }
+  .doc-table td { padding: 0.6rem 0.75rem; vertical-align: top; border-top: 1px solid rgb(231 229 228); }
+  @media (prefers-color-scheme: dark) { .doc-table td { border-top-color: rgb(51 65 85); } }
+</style>
+</head>
+<body class="bg-stone-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 font-sans antialiased">
+<main class="max-w-5xl mx-auto px-4 sm:px-6 py-12 space-y-16">
+
+  <!-- Header: title, metadata chips, legend. No intro paragraph. -->
+  <header class="space-y-5 border-b border-stone-200 dark:border-slate-800 pb-8">
+    <p class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Design doc</p>
+    <h1 class="font-serif text-4xl sm:text-5xl leading-tight">{{TITLE}}</h1>
+    <div class="flex flex-wrap gap-2 text-xs">
+      <span class="rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 px-3 py-1 font-semibold">{{STATUS}}</span>
+      <span class="rounded-full border border-stone-300 dark:border-slate-700 px-3 py-1">Author: {{AUTHOR}}</span>
+      <span class="rounded-full border border-stone-300 dark:border-slate-700 px-3 py-1">Created {{DATE}}</span>
+      <span class="rounded-full border border-stone-300 dark:border-slate-700 px-3 py-1">Updated {{UPDATED}}</span>
+      <span class="rounded-full border border-stone-300 dark:border-slate-700 px-3 py-1 font-mono">v{{VERSION}}</span>
+    </div>
+    <nav class="flex flex-wrap gap-x-5 gap-y-1 text-sm text-indigo-700 dark:text-indigo-400">
+      <a href="#summary" class="hover:underline">Summary</a>
+      <a href="#goals" class="hover:underline">Goals</a>
+      <a href="#stories" class="hover:underline">User stories</a>
+      <a href="#implementation" class="hover:underline">Implementation</a>
+      <a href="#design" class="hover:underline">Design</a>
+      <a href="#db" class="hover:underline">DB schemas</a>
+      <a href="#testing" class="hover:underline">Testing</a>
+      <a href="#questions" class="hover:underline">Open questions</a>
+      <a href="#risks" class="hover:underline">Risks</a>
+    </nav>
+  </header>
+
+  <!-- 1. Summary: lead text, 2–4 sentences -->
+  <section id="summary" class="space-y-4">
+    <h2 class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">01 · Summary</h2>
+    <p class="font-serif text-xl sm:text-2xl leading-relaxed">{{SUMMARY}}</p>
+  </section>
+
+  <!-- 2. Goals / non-goals: two cards side by side -->
+  <section id="goals" class="space-y-4">
+    <h2 class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">02 · Goals &amp; non-goals</h2>
+    <div class="grid sm:grid-cols-2 gap-4">
+      <div class="rounded-lg border border-emerald-200 dark:border-emerald-900 bg-white dark:bg-slate-900 p-5">
+        <h3 class="font-serif text-lg mb-3 text-emerald-700 dark:text-emerald-400">Goals</h3>
+        <ul class="space-y-2 text-sm list-disc pl-5">
+          <li>{{GOAL}}</li>
+        </ul>
+      </div>
+      <div class="rounded-lg border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5">
+        <h3 class="font-serif text-lg mb-3 text-slate-500 dark:text-slate-400">Non-goals</h3>
+        <ul class="space-y-2 text-sm list-disc pl-5 text-slate-600 dark:text-slate-300">
+          <li>{{NON_GOAL}}</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. User stories: long numbered list; or one "Not applicable — …" line -->
+  <section id="stories" class="space-y-4">
+    <h2 class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">03 · User stories</h2>
+    <ol class="rounded-lg border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 divide-y divide-stone-200 dark:divide-slate-800 text-sm">
+      <li class="flex gap-4 px-5 py-3">
+        <span class="font-mono text-slate-400 w-6 shrink-0">1</span>
+        <span>As a <strong>{{ACTOR}}</strong>, I want {{CAPABILITY}}, so that <span class="text-slate-600 dark:text-slate-300">{{BENEFIT}}</span></span>
+      </li>
+    </ol>
+  </section>
+
+  <!-- 4. What will be implemented -->
+  <section id="implementation" class="space-y-6">
+    <h2 class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">04 · What will be implemented</h2>
+    <div class="rounded-lg border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-x-auto">
+      <table class="doc-table">
+        <thead class="bg-stone-100 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400">
+          <tr><th>#</th><th>Deliverable</th><th>Description</th><th>Module / area</th><th>Priority</th></tr>
+        </thead>
+        <tbody>
+          <!-- Priority badges: P0 = red, P1 = amber, P2 = slate -->
+          <tr>
+            <td class="font-mono text-slate-400">1</td>
+            <td class="font-semibold">{{DELIVERABLE}}</td>
+            <td>{{DESCRIPTION}}</td>
+            <td>{{MODULE}}</td>
+            <td><span class="rounded-full bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 px-2 py-0.5 text-xs font-semibold">P0</span></td>
+          </tr>
+          <tr>
+            <td class="font-mono text-slate-400">2</td>
+            <td class="font-semibold">{{DELIVERABLE}}</td>
+            <td>{{DESCRIPTION}}</td>
+            <td>{{MODULE}}</td>
+            <td><span class="rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 px-2 py-0.5 text-xs font-semibold">P1</span></td>
+          </tr>
+          <tr>
+            <td class="font-mono text-slate-400">3</td>
+            <td class="font-semibold">{{DELIVERABLE}}</td>
+            <td>{{DESCRIPTION}}</td>
+            <td>{{MODULE}}</td>
+            <td><span class="rounded-full bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300 px-2 py-0.5 text-xs font-semibold">P2</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Phases: a vertical timeline -->
+    <div>
+      <h3 class="font-serif text-xl mb-4">Phases</h3>
+      <ol class="relative border-l-2 border-indigo-200 dark:border-indigo-900 ml-2 space-y-5">
+        <li class="pl-6 relative">
+          <span class="absolute -left-[9px] top-1.5 h-4 w-4 rounded-full bg-indigo-600 dark:bg-indigo-400 ring-4 ring-stone-50 dark:ring-slate-950"></span>
+          <p class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Phase 1</p>
+          <p class="font-semibold">{{PHASE}}</p>
+          <p class="text-sm text-slate-600 dark:text-slate-300">{{PHASE_DETAIL}}</p>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- 5. High-level design: diagrams carry the weight -->
+  <section id="design" class="space-y-8">
+    <h2 class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">05 · High-level design</h2>
+
+    <div class="grid lg:grid-cols-2 gap-4">
+      <figure class="rounded-lg border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 space-y-3">
+        <figcaption class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Architecture</figcaption>
+        <pre class="mermaid">
+flowchart LR
+  Client --> API
+  API --> DB[(Database)]
+  classDef new stroke:#4f46e5,stroke-width:2px;
+  class API new
+        </pre>
+      </figure>
+      <figure class="rounded-lg border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 space-y-3">
+        <figcaption class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Main flow</figcaption>
+        <pre class="mermaid">
+sequenceDiagram
+  participant C as Client
+  participant A as API
+  C->>A: request
+  A-->>C: response
+        </pre>
+      </figure>
+    </div>
+
+    <!-- Components: one card each -->
+    <div>
+      <h3 class="font-serif text-xl mb-4">Components</h3>
+      <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <article class="rounded-lg border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 space-y-2">
+          <p class="text-xs uppercase tracking-wider font-semibold text-indigo-700 dark:text-indigo-400">{{COMPONENT}}</p>
+          <p class="text-sm">{{RESPONSIBILITY}}</p>
+          <p class="font-mono text-xs text-slate-500 dark:text-slate-400">{{INTERFACES}}</p>
+        </article>
+      </div>
+    </div>
+
+    <!-- Key decisions -->
+    <div>
+      <h3 class="font-serif text-xl mb-4">Key decisions</h3>
+      <div class="rounded-lg border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-x-auto">
+        <table class="doc-table">
+          <thead class="bg-stone-100 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400">
+            <tr><th>Decision</th><th>Choice</th><th>Alternatives</th><th>Why</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="font-semibold">{{DECISION}}</td>
+              <td><span class="rounded bg-emerald-50 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300 px-1.5 py-0.5">{{CHOICE}}</span></td>
+              <td class="text-slate-500 dark:text-slate-400">{{ALTERNATIVES}}</td>
+              <td>{{RATIONALE}}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Cross-cutting concerns: compact grid, only the ones that apply -->
+    <div>
+      <h3 class="font-serif text-xl mb-4">Cross-cutting concerns</h3>
+      <dl class="grid sm:grid-cols-2 gap-x-8 gap-y-4 text-sm">
+        <div class="border-l-4 border-indigo-300 dark:border-indigo-800 pl-3">
+          <dt class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">{{CONCERN}}</dt>
+          <dd>{{APPROACH}}</dd>
+        </div>
+      </dl>
+    </div>
+  </section>
+
+  <!-- 6. DB schemas -->
+  <section id="db" class="space-y-8">
+    <h2 class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">06 · DB schemas</h2>
+
+    <figure class="rounded-lg border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 space-y-3">
+      <figcaption class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Entity relationships</figcaption>
+      <pre class="mermaid">
+erDiagram
+  USER ||--o{ ORDER : places
+      </pre>
+    </figure>
+
+    <!-- One article per table -->
+    <article class="rounded-lg border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
+      <div class="px-5 pt-5 pb-3 space-y-1">
+        <h3 class="font-mono text-lg font-semibold">{{TABLE_NAME}}</h3>
+        <p class="text-sm text-slate-600 dark:text-slate-300">{{TABLE_PURPOSE}}</p>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="doc-table">
+          <thead class="bg-stone-100 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400">
+            <tr><th>Column</th><th>Type</th><th>Null</th><th>Default</th><th>Constraints / notes</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="font-mono font-semibold">id</td>
+              <td class="font-mono text-indigo-700 dark:text-indigo-400">uuid</td>
+              <td>no</td>
+              <td class="font-mono text-xs">gen_random_uuid()</td>
+              <td><span class="rounded bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 text-xs font-semibold">PK</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="px-5 py-3 text-sm border-t border-stone-200 dark:border-slate-800"><span class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 mr-2">Indexes</span><span class="font-mono text-xs">{{INDEXES}}</span></p>
+    </article>
+
+    <div>
+      <h3 class="font-serif text-xl mb-4">DDL</h3>
+      <pre class="rounded-lg bg-slate-900 text-slate-100 dark:bg-black/60 p-5 overflow-x-auto text-sm leading-relaxed"><code class="font-mono">{{DDL}}</code></pre>
+    </div>
+
+    <div class="rounded-lg bg-amber-50 border border-amber-200 text-amber-900 dark:bg-amber-900/20 dark:border-amber-900 dark:text-amber-200 px-4 py-3 text-sm">
+      <span class="font-semibold">Migration:</span> {{MIGRATION_NOTES}}
+    </div>
+  </section>
+
+  <!-- 7. Testing: one card per agreed seam; few and high -->
+  <section id="testing" class="space-y-4">
+    <h2 class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">07 · Testing</h2>
+    <div class="grid sm:grid-cols-2 gap-4">
+      <!-- Seam badge: New = indigo, Existing = slate -->
+      <article class="rounded-lg border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 space-y-2">
+        <div class="flex items-center justify-between gap-2">
+          <p class="font-mono text-sm font-semibold">{{SEAM}}</p>
+          <span class="rounded-full bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300 px-2 py-0.5 text-xs font-semibold">Existing</span>
+        </div>
+        <p class="text-sm">{{BEHAVIOUR_TESTED}}</p>
+        <p class="text-xs text-slate-500 dark:text-slate-400"><span class="uppercase tracking-wider mr-1">Behind it</span> {{MODULES}}</p>
+        <p class="text-xs text-slate-500 dark:text-slate-400"><span class="uppercase tracking-wider mr-1">Prior art</span> <span class="font-mono">{{PRIOR_ART}}</span></p>
+      </article>
+      <article class="rounded-lg border border-indigo-200 dark:border-indigo-900 bg-white dark:bg-slate-900 p-4 space-y-2">
+        <div class="flex items-center justify-between gap-2">
+          <p class="font-mono text-sm font-semibold">{{SEAM}}</p>
+          <span class="rounded-full bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300 px-2 py-0.5 text-xs font-semibold">New</span>
+        </div>
+        <p class="text-sm">{{BEHAVIOUR_TESTED}}</p>
+        <p class="text-xs text-slate-500 dark:text-slate-400"><span class="uppercase tracking-wider mr-1">Behind it</span> {{MODULES}}</p>
+        <p class="text-xs text-slate-500 dark:text-slate-400"><span class="uppercase tracking-wider mr-1">Prior art</span> <span class="font-mono">{{PRIOR_ART}}</span></p>
+      </article>
+    </div>
+  </section>
+
+  <!-- 8. Open questions -->
+  <section id="questions" class="space-y-4">
+    <h2 class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">08 · Open questions</h2>
+    <div class="rounded-lg border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-x-auto">
+      <table class="doc-table">
+        <thead class="bg-stone-100 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400">
+          <tr><th>#</th><th>Question</th><th>Why it matters</th><th>Options / leaning</th><th>Owner</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+          <!-- Status badges: Open = amber, Resolved = emerald -->
+          <tr>
+            <td class="font-mono text-slate-400">Q1</td>
+            <td class="font-semibold">{{QUESTION}}</td>
+            <td>{{IMPACT}}</td>
+            <td class="text-slate-600 dark:text-slate-300">{{OPTIONS}}</td>
+            <td>{{OWNER}}</td>
+            <td><span class="rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 px-2 py-0.5 text-xs font-semibold">Open</span></td>
+          </tr>
+          <tr>
+            <td class="font-mono text-slate-400">Q2</td>
+            <td class="font-semibold">{{QUESTION}}</td>
+            <td>{{IMPACT}}</td>
+            <td class="text-slate-600 dark:text-slate-300">{{OPTIONS}}</td>
+            <td>{{OWNER}}</td>
+            <td><span class="rounded-full bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300 px-2 py-0.5 text-xs font-semibold">Resolved</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 9. Risks (optional): one red-edged row per risk -->
+  <section id="risks" class="space-y-4">
+    <h2 class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">09 · Risks</h2>
+    <ul class="space-y-3">
+      <li class="rounded-lg border-l-4 border-red-500 bg-white dark:bg-slate-900 px-4 py-3 text-sm">
+        <span class="font-semibold">{{RISK}}</span>
+        <span class="text-slate-600 dark:text-slate-300"> — {{MITIGATION}}</span>
+      </li>
+    </ul>
+  </section>
+
+</main>
+</body>
+</html>
