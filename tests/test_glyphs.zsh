@@ -92,6 +92,25 @@ test_render_git_nerd() {
   assert_eq "$REPLY" $'\ue0a0 main \uf00c' "nerd git segment for clean main"
 }
 
+test_ascii_when_codeset_not_utf8() {             # m2: effective codeset, not the variable's spelling
+  zmodload zsh/langinfo 2>/dev/null
+  if (( ! ${+langinfo} )); then
+    print -r -- "  # skipped: zsh/langinfo unavailable"
+    return 0
+  fi
+  LC_ALL=C
+  # No such locale anywhere: setlocale fails and the shell stays in C (ASCII),
+  # although the name says UTF-8. zsh then edits the line as ASCII too.
+  capture_err eval 'LC_ALL=xx_XX.UTF-8'
+  assert_eq "$REPLY" "" "stderr of setting LC_ALL to a locale that does not exist"
+  _emjay_glyphs_select
+  assert_eq "$_emjay_glyph_mode" ascii "mode with LC_ALL=xx_XX.UTF-8 (codeset ${langinfo[CODESET]})"
+  EMJAY_ASCII=0
+  _emjay_glyphs_select
+  assert_eq "$_emjay_glyph_mode" unicode "EMJAY_ASCII=0 still forces Unicode"
+  assert_eq "${_emjay_glyph[branch]}" "$want_unicode[branch]" "branch glyph loaded under a non-UTF-8 codeset"
+}
+
 test_precmd_applies_mode() {
   EMJAY_NERD_FONT=1
   _emjay_precmd

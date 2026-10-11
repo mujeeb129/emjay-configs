@@ -824,12 +824,15 @@ _emjay_git_cancel() {
   return 0
 }
 
-# _emjay_zle_busy: 0 while completion/menu-select or an incremental search is
-# on screen. A reset-prompt then would corrupt the list or the search line.
+# _emjay_zle_busy: 0 while a completion list/menu-select or an incremental
+# search is on screen; a reset-prompt then would corrupt the list or the search
+# line. During isearch $LASTWIDGET is still the widget before it, so isearch is
+# detected by $ISEARCHMATCH_ACTIVE; once it ends the flag drops at once, while
+# $LASTWIDGET would keep naming the search widget until the next key.
 _emjay_zle_busy() {
   emulate -L zsh
   [[ ${ISEARCHMATCH_ACTIVE:-0} == 1 ]] && return 0
-  [[ ${LASTWIDGET-} == (*complet*|menu-*|*isearch*|*history-search*|*incremental*search*) ]]
+  [[ ${LASTWIDGET-} == (*complet*|menu-*|*isearch*|*history-search*) ]]
 }
 
 # _emjay_git_callback <fd> [err]: zle -F -w handler (tests call it to drain).

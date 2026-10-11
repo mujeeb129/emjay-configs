@@ -257,4 +257,58 @@ test_branch_name_not_evaluated() {
   assert_eq "$REPLY" "${UG[branch]} $br ${UG[clean]}" "hostile branch name: git segment"
 }
 
+# ------------------------------------------------------------ review fixes
+
+test_fsmonitor_hook_not_run() {                  # m5: repo-local hook command
+  assert_ok mkrepo $TT/r
+  print -r -- "#!/bin/sh
+: > '$TT/pwned'" > $TT/hook.sh
+  chmod +x $TT/hook.sh
+  assert_ok git -C $TT/r config core.fsmonitor $TT/hook.sh
+  cd $TT/r
+  _t_git_expect "${UG[branch]} main ${UG[clean]}" "repo with a core.fsmonitor hook"
+  assert_fail test -e $TT/pwned
+  # control: plain git status does run the hook, so the check above is meaningful
+  _t_q git status --porcelain=v2
+  assert_ok test -e $TT/pwned
+}
+
+test_fsmonitor_boolean_kept() {                  # m5: builtin daemon (boolean) left alone
+  assert_ok mkrepo $TT/r
+  assert_ok git -C $TT/r config core.fsmonitor true
+  local real=$commands[git]
+  mkdir -p $TT/bin
+  print -r -- "#!/bin/sh
+printf '%s\n' \"\$*\" >> '$TT/args'
+exec '$real' \"\$@\"" > $TT/bin/git
+  chmod +x $TT/bin/git
+  path=($TT/bin $path)
+  rehash
+  cd $TT/r
+  _t_git_expect "${UG[branch]} main ${UG[clean]}" "repo with core.fsmonitor=true"
+  local -a calls
+  calls=(${(f)"$(<$TT/args)"})
+  local st=${(M)calls:#*status --porcelain=v2*}
+  assert_nonempty "$st" "the git status call"
+  assert_not_contains "$st" core.fsmonitor=false "git status call when core.fsmonitor=true"
+}
+
+test_reftable_head() {                           # nit: reftable keeps a HEAD placeholder
+  if ! _t_q git init -q --ref-format=reftable $TT/r; then
+    print -r -- "  # skipped: this git has no reftable support"
+    return 0
+  fi
+  assert_ok git -C $TT/r commit -q --allow-empty -m init
+  cd $TT/r
+  _t_git_expect "${UG[branch]} main ${UG[clean]}" "reftable work tree"
+  cd $TT/r/.git
+  _t_git_expect "${UG[branch]} main" "inside .git of a reftable repo"
+  assert_ok git -C $TT/r checkout -q --detach
+  _t_sha7 HEAD
+  _t_git_expect "${UG[detached]} $REPLY" "inside .git of a reftable repo, detached"
+  assert_ok _t_q git clone -q --bare $TT/r $TT/b.git
+  cd $TT/b.git
+  _t_git_expect "${UG[branch]} main" "bare clone"
+}
+
 run_tests

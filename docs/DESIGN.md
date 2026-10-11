@@ -12,6 +12,9 @@ This design follows `docs/REQUIREMENTS.md` and does not re-open anything decided
 | Options hygiene | Every function starts with `emulate -L zsh`, plus `setopt extendedglob` where patterns need it. | Immune to user options such as `ksh_arrays` and `rematch_pcre`. |
 | Minimum versions | zsh 5.8, git 2.35 (needed for the porcelain v2 `# stash` header). Apple git 2.39 is fine. Older git still works but always reports stash as 0. | |
 | OMZ interplay | The theme needs nothing from OMZ. Our PROMPT contains no `$(git_prompt_info)`, so OMZ never registers its own git async handlers. RPROMPT is left alone. | |
+| Parse-time safety | A prologue saves the user's `aliases`, `sh_glob`, `ignore_braces` and `ignore_close_braces`, then runs `'builtin' 'setopt' no_aliases no_sh_glob brace_expand no_ignore_braces no_ignore_close_braces`; an epilogue restores them. Hook registration runs inside `() { emulate -L zsh; … }`. | Aliases are expanded when a function body is parsed, and `sh_glob`/`ignore_braces` change the grammar, so e.g. `alias read='read -e'` or `setopt ignore_braces` would otherwise break the theme. `ksh_arrays` would break the `(Ie)` dedupe checks at top level. |
+| No stray non-zero status | Nothing on the precmd, chpwd or callback path leaves a non-zero status behind: status-returning helpers are called as `f || :` or in conditions, and there are no `(( expr ))` statements that can evaluate to 0 (integer assignments are used instead). | A user `TRAPZERR` (or `ERR_EXIT` habits) would otherwise fire on every prompt. |
+| Hostile repos | The worker never runs a repo-local `core.fsmonitor` hook command, and every byte of repo or kubeconfig data shown in the prompt is sanitised (control characters become `?`). | `cd` into an untrusted checkout must not run its code or let it drive the terminal. |
 
 ## 1. File layout
 
@@ -27,8 +30,9 @@ tests/test_render.zsh  tests/test_static.zsh  tests/test_install.zsh
 ```
 
 Section order inside the theme file:
-1. Header with the config docs.
-2. Module loads: `zmodload zsh/datetime zsh/system`, `zmodload -F zsh/stat b:zstat`. Use `-F` so the user's `/usr/bin/stat` is not shadowed.
+0. Prologue: save and pin the parse-time options (§0, "Parse-time safety").
+1. Header with the config docs. The file is ASCII-only.
+2. Module loads, each `2>/dev/null || :`: `zsh/datetime`, `zsh/system`, `zsh/zselect` (readiness check in `_emjay_git_cancel`), `zsh/langinfo` (codeset for glyph selection), and `zmodload -F zsh/stat b:zstat`. Use `-F` so the user's `/usr/bin/stat` is not shadowed.
 3. Globals.
 4. Glyphs.
 5. Formatters.
@@ -38,10 +42,11 @@ Section order inside the theme file:
 9. Renderers.
 10. Hooks.
 11. Registration.
+12. Epilogue: restore the options saved by the prologue and unset its temporary global `_emjay_src_opts`.
 
 ## 2. Globals
 
-All globals are created with `typeset -g…` at load. Re-sourcing is safe: existing values are kept, any pending worker is cancelled, and hooks are not duplicated because `add-zsh-hook` dedupes.
+All globals are created with `typeset -g…` at load. Re-sourcing is safe: existing values are kept, any pending worker is cancelled, and hooks are not duplicated (registration uses the same `(Ie)` dedupe as `add-zsh-hook`, without autoloading it, so no non-`_emjay_` function is defined).
 
 | Global | Type | Written by | Meaning |
 |---|---|---|---|
@@ -52,13 +57,18 @@ All globals are created with `typeset -g…` at load. Re-sourcing is safe: exist
 | `_emjay_cmd_ran` | int | preexec / status_update | 1 if a command ran since the last prompt |
 | `_emjay_last_status` | int | status_update | exit code to display (0 after an empty Enter) |
 | `_emjay_cmd_duration` | int | status_update | whole seconds, floored (0 after an empty Enter) |
-| `_emjay_kube` | assoc | kube_update / kube_load / render_kube | keys: `key ctx ns display prod` |
+| `_emjay_kube` | assoc | kube_update / kube_load / render_kube | keys: `key ctx ns display prod`; `display` has control characters replaced by `?` |
 | `_emjay_kp_cur` | scalar | kube_parse_file | current-context of the **last parsed file** |
 | `_emjay_kp_ctx` | assoc | kube_parse_file | context name → namespace for the last parsed file (namespace may be empty; key present means the context is defined) |
 | `_emjay_git` | assoc | parse_status / collect / apply | keys in the table below |
-| `_emjay_git_key` | scalar | git_update | repo key of `$PWD` at the last precmd (`""` means not a repo) |
+| `_emjay_git_key` | scalar | git_update / chpwd | repo key of `$PWD` at the last precmd or chpwd (`""` means not a repo, or git is missing) |
 | `_emjay_git_reqid` | int | git_request | monotonically increasing request ID |
-| `_emjay_git_fd` / `_emjay_git_pid` | int | request / cancel / callback | pending worker's fd and pid; 0 means none |
+| `_emjay_git_req_key` | scalar | git_request | repo key the latest request was made for |
+| `_emjay_git_fd` / `_emjay_git_pid` | int | request / cancel / callback | pending worker's fd and pid; 0 means none. The pid line is read into a scalar and accepted only if it matches `<->` (reading pipe data into an integer variable would arithmetic-evaluate it) |
+| `_emjay_git_worker_mode` / `_emjay_git_child` | int | worker | set only inside the worker subshell: run git as a killable coproc / that coproc's pid |
+| `_emjay_bang` | int | precmd | 1 if the user has `PROMPT_BANG` on (captured before `emulate`) |
+| `_emjay_redraw_pending` | int | callback / pre-redraw hook / precmd | a reset-prompt was deferred (§3.5) |
+| `_emjay_zle_hooked` | int | zle_hook_install | the `zle-line-pre-redraw` hook is installed (once per shell) |
 | `_emjay_seg_dir` `_emjay_seg_git` `_emjay_seg_kube` `_emjay_seg_status` `_emjay_seg_took` `_emjay_seg_char` | scalar | renderers | raw prompt-escape strings (§3.6) |
 | `_emjay_line1` | scalar | assemble | line 1 |
 | `_emjay_prompt` | scalar | assemble | full prompt. Before the first precmd it is `"${_emjay_glyph[prompt]} "` |
@@ -70,9 +80,9 @@ All globals are created with `typeset -g…` at load. Re-sourcing is safe: exist
 | `repo` | `1` in a repo or git dir, otherwise `0` |
 | `bare` | `1` when there is no work tree (inside `.git`, bare repo, or status failed), otherwise `0` |
 | `gitdir` | absolute per-worktree git dir (`git rev-parse --absolute-git-dir`) |
-| `branch` | branch name, `""` when detached |
+| `branch` | branch name, `""` when detached. During a rebase it is the branch being rebased (from `rebase-merge/head-name` or `rebase-apply/head-name`) |
 | `oid` | full HEAD OID, `""` for `(initial)` |
-| `detached` | `1` / `0` |
+| `detached` | `1` / `0`. `0` during a rebase whose `head-name` names a branch (the prompt shows `⎇ <branch> … REBASE n/m`, as in the requirements mock); stays `1` when a detached HEAD is being rebased |
 | `upstream` | e.g. `origin/main`, or `""` |
 | `ahead` `behind` `staged` `modified` `untracked` `conflicts` `stash` | integers, default `0` |
 | `op` | operation string (§3.4), or `""` |
@@ -86,6 +96,7 @@ All globals are created with `typeset -g…` at load. Re-sourcing is safe: exist
 | `_emjay_enabled <VARNAME>` | return status | 0 (enabled) unless `${(P)VARNAME}` is exactly `0` |
 | `_emjay_fmt_duration <secs>` | `REPLY` | Input is truncated to an integer. Negative or non-numeric input becomes 0. Format: under 60 → `Ns`; under 3600 → `Mm[Ss]`; under 86400 → `Hh[Mm]` (seconds dropped); otherwise `Dd[Hh]`. A **zero trailing unit is omitted**. |
 | `_emjay_fmt_status <code>` | `REPLY` | If `129 ≤ code ≤ 159` and `$signals[code-127]` is non-empty and not `EXIT`, `ZERR` or `DEBUG`, return the signal name. Otherwise return the decimal code. |
+| `_emjay_esc <text>` | `REPLY` | User data made safe for the prompt: control characters (`[[:cntrl:]]`) become `?`, `%` becomes `%%`, and when `_emjay_bang` is 1 (`PROMPT_BANG` on) `!` becomes `!!`. |
 
 `_emjay_fmt_duration` exact outputs:
 
@@ -100,9 +111,9 @@ All globals are created with `typeset -g…` at load. Re-sourcing is safe: exist
 | Signature | Effect |
 |---|---|
 | `_emjay_glyphs_load <unicode\|nerd\|ascii>` | Fills all 14 slots of `_emjay_glyph` and sets `_emjay_glyph_mode`. |
-| `_emjay_glyphs_select` | Picks the mode: `nerd` if `EMJAY_NERD_FONT == 1`; else `ascii` if `EMJAY_ASCII == 1`; else `unicode` if `EMJAY_ASCII == 0`; else `ascii` if `${(L)${LC_ALL:-${LC_CTYPE:-$LANG}}}` matches neither `*utf-8*` nor `*utf8*`; else `unicode`. Calls load only when `_emjay_glyph_key` has changed. It runs at load time and in every precmd. |
+| `_emjay_glyphs_select` | Picks the mode: `nerd` if `EMJAY_NERD_FONT == 1`; else `ascii` if `EMJAY_ASCII == 1`; else `unicode` if `EMJAY_ASCII == 0`; else `ascii` if the shell's effective codeset `${(L)langinfo[CODESET]}` (zsh/langinfo) matches neither `*utf-8*` nor `*utf8*`; else `unicode`. Without zsh/langinfo it falls back to `${(L)${LC_ALL:-${LC_CTYPE:-$LANG}}}`. The codeset, not the variables' spelling, decides: `LC_CTYPE=UTF-8` (no such locale on Linux) leaves zsh editing in ASCII, and Unicode glyphs would then garble the line. Calls load only when `_emjay_glyph_key` (still the env string) has changed. It runs at load time, in every precmd, and at the start of each renderer that uses glyphs. |
 
-The theme writes non-ASCII glyphs as `$'\uXXXX'` or `$'\UXXXXXXXX'` escapes, and tests use the same escapes.
+The theme file is ASCII-only. It writes glyphs as UTF-8 **byte** escapes (`$'\xe2\x8e\x87'` for U+2387), with the code points noted beside each table; tests write the same glyphs as `$'\uXXXX'`. Byte escapes are used in the theme because a `\u` escape is converted with the locale in force when zsh converts it, which for a sourced file can be a later, non-UTF-8 one: with `LC_ALL=C EMJAY_ASCII=0` the Unicode table failed with `character not in range`. Byte escapes never depend on the locale.
 
 | slot | unicode | nerd (Nerd Fonts v3) | ascii |
 |---|---|---|---|
@@ -135,7 +146,7 @@ Two slots are additions to the requirement's glyph list: `clean` gives "clean/di
 | `_emjay_kube_shorten <ctx>` | — | `REPLY`. For `^arn:aws[^:]*:eks:[^:]*:[0-9]*:cluster/(.+)$` → group 1. For `^gke_[^_]+_[^_]+_(.+)$` → group 1. Otherwise the input unchanged. |
 | `_emjay_kube_is_prod <ctx>` | `EMJAY_KUBE_PROD_PATTERN` (default `prod|prd|live`; **an empty value disables the check**) | Returns 0 if `[[ ${(L)ctx} =~ ${(L)pat} ]] 2>/dev/null`. The match is against the **full** context name, as an ERE. An invalid regex counts as not prod and prints nothing. |
 | `_emjay_kube_update` | env | If `EMJAY_SHOW_KUBE` is off: `_emjay_kube=()`, `_emjay_seg_kube=''`, return. Otherwise: `_emjay_kube_files`, then `_emjay_kube_cache_key $reply`. If `REPLY != _emjay_kube[key]`, call `_emjay_kube_load $reply` and set `_emjay_kube[key]=$REPLY`. Always finish with `_emjay_render_kube`. |
-| `_emjay_render_kube` | `_emjay_kube[ctx]`, `_emjay_kube[ns]` | Sets `_emjay_kube[display]` to `"$short/$ns"` (or `''`), `_emjay_kube[prod]` to `1` or `0`, and `_emjay_seg_kube`. |
+| `_emjay_render_kube` | `_emjay_kube[ctx]`, `_emjay_kube[ns]` | Sets `_emjay_kube[display]` to `"$short/$ns"` with control characters replaced by `?` (or `''`), `_emjay_kube[prod]` to `1` or `0`, and `_emjay_seg_kube` (display escaped with `_emjay_esc`). The prod check still runs on the raw full context name. |
 
 The cache key is pinned. Tests depend on ctime **not** being part of it.
 
@@ -160,9 +171,11 @@ _emjay_kube_cache_key() {
 |---|---|
 | `_emjay_git_find_root [dir=$PWD]` | `REPLY` = repo key; returns 0 if found, 1 with `REPLY=''` otherwise. If `GIT_DIR` is set: `REPLY="GIT_DIR=${GIT_DIR:a}"`. Otherwise walk `d` from dir up to `/`. Return `d` at the first match of `[[ -e $d/.git ]]`, or of `[[ -f $d/HEAD && -d $d/objects && -d $d/refs ]]` (bare or inside `.git`). Pure zsh using stat tests only. From `<repo>/.git/refs` the result is `<repo>/.git`. |
 | `_emjay_git_parse_status <text>` | **Pure.** Sets `_emjay_git=()`, then `repo=1`, branch, oid, detached, upstream, ahead, behind, staged, modified, untracked, conflicts, stash (defaults `''` or `0`). Does not set `bare`, `gitdir` or `op`. Rules below. |
-| `_emjay_git_read_head <gitdir>` | Reads `$gitdir/HEAD`. `ref: refs/heads/X` → `branch=X`, `detached=0`. A hex OID → `branch=''`, `detached=1`, `oid=<hex>`. Writes into `_emjay_git` and touches no other keys. |
-| `_emjay_git_operation <gitdir>` | `REPLY`, checked in this order, first match wins (table below). A missing directory gives `''`. |
-| `_emjay_git_collect` | Forks git, so call it **only** from the worker or in sync mode. Runs in `$PWD` with `GIT_OPTIONAL_LOCKS=0 command git …`. Steps below. Returns 0 if `repo=1`. |
+| `_emjay_git_read_head <gitdir>` | Reads `$gitdir/HEAD`. `ref: refs/heads/X` → `branch=X`, `detached=0`. A hex OID → `branch=''`, `detached=1`, `oid=<hex>`. The reftable placeholder `ref: refs/heads/.invalid` is ignored (returns 1, keys untouched). Writes into `_emjay_git` and touches no other keys. Used by tests and as the last fallback in `collect`. |
+| `_emjay_git_operation <gitdir>` | `REPLY`, checked in this order, first match wins (table below). A missing directory gives `''`. The counters are file contents, so after stripping whitespace each must match `<->` or both are dropped (an escape sequence in `msgnum` gives plain `REBASE`). |
+| `_emjay_git_rebase_head <gitdir>` | `REPLY` = the branch being rebased: the first readable `rebase-merge/head-name` or `rebase-apply/head-name`, with `refs/heads/` stripped; `''` when there is none or it is not under `refs/heads/` (e.g. `detached HEAD`). |
+| `_emjay_git_run <var> <git args…>` | Runs git; stdout (trailing newlines removed) into `$var`, git's status returned. In the worker (`_emjay_git_worker_mode=1`) git runs as `coproc command git …` and its pid is kept in `_emjay_git_child`, so the worker's TERM trap can kill it; otherwise it is `$(GIT_OPTIONAL_LOCKS=0 command git … 2>/dev/null)`. |
+| `_emjay_git_collect` | Forks git, so call it **only** from the worker or in sync mode. Runs in `$PWD`; every git call goes through `_emjay_git_run` with `GIT_OPTIONAL_LOCKS=0`. Steps below. Returns 0 if `repo=1`. |
 | `_emjay_git_serialize` | `REPLY` = one `key=value` line per key of `_emjay_git`, sorted (`${(ko)_emjay_git}`), joined with `\n`. |
 | `_emjay_git_apply <payload>` | Payload format is in §3.5. Returns 1 (and changes nothing) if the payload is empty or line 1 is not equal to `$_emjay_git_reqid`. Otherwise: `_emjay_git=()`, then for each later line containing `=`, split at the first `=`. Calls `_emjay_render_git` and `_emjay_assemble`, and returns 0. |
 
@@ -192,10 +205,11 @@ Suggested implementation is vectorised: `${#${(M)lines:#[12] [^.]?*}}` and simil
 | `BISECT_LOG` | `BISECTING` |
 
 `_emjay_git_collect` steps:
-1. Run `out=$(… rev-parse --absolute-git-dir --is-inside-work-tree 2>/dev/null)`. If it fails: `_emjay_git=(repo 0)` and return 1.
-2. If line 2 is `true` and `status --porcelain=v2 --branch --show-stash` succeeds: call `_emjay_git_parse_status "$out"` and set `bare=0`.
-3. Otherwise: set `_emjay_git` to `repo=1`, `bare=1`, all counters 0, upstream `''`, then call `_emjay_git_read_head $gitdir`.
-4. Finally set `gitdir` and `op` (from `_emjay_git_operation $gitdir`).
+1. Run `rev-parse --absolute-git-dir --is-inside-work-tree`. If it fails (or prints no git dir): `_emjay_git=(repo 0)` and return 1.
+2. If line 2 is `true`: read the effective `git config --get core.fsmonitor`. If it is non-empty and not a boolean (`true false yes no on off` or digits, case-insensitive), it is a hook command taken from the repo's own config, so status runs with `-c core.fsmonitor=false`; the boolean form (git's builtin daemon) is left in effect. Then, if `status --porcelain=v2 --branch --show-stash` succeeds: call `_emjay_git_parse_status "$out"` and set `bare=0`.
+3. Otherwise (no work tree, or status failed): set `_emjay_git` to `repo=1`, `bare=1`, `branch=''`, `oid=''`, `detached=0`, all counters 0, upstream `''`. Then ask git for HEAD, because a reftable repo's HEAD file only holds a placeholder: `symbolic-ref -q --short HEAD` → `branch`; else `rev-parse -q --verify HEAD` → `detached=1`, `oid`; else `_emjay_git_read_head $gitdir`.
+4. Set `gitdir` and `op` (from `_emjay_git_operation $gitdir`).
+5. If `detached == 1` and `op` starts with `REBASE`: `_emjay_git_rebase_head $gitdir`; when that names a branch, set `branch` to it and `detached=0`.
 
 ### 3.5 Git, async worker
 
@@ -207,32 +221,67 @@ Wire format. The worker writes to its pipe in this order:
 The callback therefore sees a payload whose line 1 is the reqid. When the directory is not a repo, the payload is `<reqid>\nrepo=0\n`.
 
 ```zsh
-_emjay_git_update() {            # sync path, called from precmd; forks only when the repo key is non-empty
+_emjay_git_update() {
   emulate -L zsh
-  if ! _emjay_enabled EMJAY_SHOW_GIT || (( ! $+commands[git] )); then
-    _emjay_git_cancel; _emjay_git=(); _emjay_git_key=; _emjay_seg_git=; return
+  if ! _emjay_enabled EMJAY_SHOW_GIT; then
+    _emjay_git_key=
+    _emjay_git_cancel
+    _emjay_git=()
+    _emjay_seg_git=
+    return 0
   fi
-  _emjay_git_find_root
-  if [[ $REPLY != $_emjay_git_key ]]; then _emjay_git=(); _emjay_git_key=$REPLY; fi   # never show another repo's data
-  if [[ -n $_emjay_git_key ]]; then _emjay_git_request; else _emjay_git_cancel; fi
+  _emjay_git_find_root || :
+  # git missing counts as "not a repo". Looked up only inside a repo: a miss
+  # walks all of $PATH (tens of /mnt/c entries on WSL) on every prompt.
+  [[ -n $REPLY ]] && (( ! $+commands[git] )) && REPLY=
+  if [[ $REPLY != "$_emjay_git_key" ]]; then      # never show another repo's data
+    _emjay_git=()
+    _emjay_git_key=$REPLY
+  fi
+  if [[ -n $_emjay_git_key ]]; then
+    _emjay_git_request
+  else
+    _emjay_git_cancel
+    _emjay_git=()
+  fi
   _emjay_render_git
+  return 0
 }
 
 _emjay_git_request() {
   emulate -L zsh
   _emjay_git_cancel
   (( ++_emjay_git_reqid ))
-  if [[ $EMJAY_GIT_ASYNC == 0 ]]; then _emjay_git_collect; _emjay_render_git; return; fi
-  local fd
+  _emjay_git_req_key=$_emjay_git_key
+  if [[ $EMJAY_GIT_ASYNC == 0 ]]; then
+    _emjay_git_collect || :
+    _emjay_render_git
+    return 0
+  fi
+  local fd pid=
+  # Commands started from the prompt while a worker is pending inherit this
+  # read end. That is harmless (they never read it) and it is closed on the
+  # next callback or precmd; not worth a close-on-exec dance.
   exec {fd}< <(_emjay_git_worker $_emjay_git_reqid "$PWD")
   _emjay_git_fd=$fd
-  read -r -u $fd _emjay_git_pid || _emjay_git_pid=0
-  zle -F $fd _emjay_git_callback 2>/dev/null   # inert in non-ZLE shells; tests drain manually
+  IFS= read -r -u $fd pid || pid=
+  [[ $pid == <-> ]] || pid=0          # never arithmetic-evaluate pipe data
+  _emjay_git_pid=$pid
+  if [[ -o zle ]]; then
+    # As a widget (-w) the handler sees $LASTWIDGET and $ISEARCHMATCH_ACTIVE.
+    (( ${+widgets[_emjay_git_callback]} )) || zle -N _emjay_git_callback 2>/dev/null || :
+    zle -F -w $fd _emjay_git_callback 2>/dev/null || :
+  fi
+  return 0
 }
 
-_emjay_git_worker() {            # $1=reqid $2=dir; runs inside <(...)
+_emjay_git_worker() {
   emulate -L zsh
   print -r -- $sysparams[pid]
+  trap - ZERR                        # a user ZERR trap must not write into the pipe
+  _emjay_git_worker_mode=1 _emjay_git_child=0
+  trap '(( _emjay_git_child > 1 )) && kill -TERM $_emjay_git_child 2>/dev/null; exit 143' TERM
+  export GIT_OPTIONAL_LOCKS=0
   { builtin cd -q -- "$2" 2>/dev/null && _emjay_git_collect } || _emjay_git=(repo 0)
   _emjay_git_serialize
   print -r -- "$1"$'\n'"$REPLY"
@@ -241,36 +290,89 @@ _emjay_git_worker() {            # $1=reqid $2=dir; runs inside <(...)
 _emjay_git_cancel() {
   emulate -L zsh
   (( _emjay_git_fd > 0 )) || return 0
-  zle -F $_emjay_git_fd 2>/dev/null
-  exec {_emjay_git_fd}<&-
-  if (( _emjay_git_pid > 0 )); then
-    if [[ -o monitor ]]; then kill -TERM -$_emjay_git_pid 2>/dev/null || kill -TERM $_emjay_git_pid 2>/dev/null
-    else kill -TERM $_emjay_git_pid 2>/dev/null; fi
-  fi
+  local fd=$_emjay_git_fd pid=$_emjay_git_pid data=
+  local -a reply
   _emjay_git_fd=0 _emjay_git_pid=0
+  zle -F $fd 2>/dev/null || :
+  if zselect -t 0 -r $fd 2>/dev/null; then
+    pid=0
+    if [[ -n $_emjay_git_req_key && $_emjay_git_req_key == "$_emjay_git_key" ]]; then
+      IFS= read -r -u $fd -d '' data || :
+    fi
+  fi
+  { exec {fd}<&- } 2>/dev/null
+  if [[ $pid == <-> ]] && (( pid > 1 )); then
+    if [[ -o monitor ]]; then
+      kill -TERM -$pid 2>/dev/null || :      # its own process group under job control
+    else
+      kill -TERM $pid 2>/dev/null || :       # its TERM trap kills the git child
+    fi
+  fi
+  if [[ -n $data ]]; then
+    _emjay_git_apply "$data" || :
+  fi
+  return 0
 }
 
-_emjay_git_callback() {          # $1=fd, $2=err from zle -F
+_emjay_git_callback() {
   emulate -L zsh
-  local fd=$1 data= old=$_emjay_prompt
-  [[ -z $2 || $2 == hup ]] && IFS= read -r -u $fd -d '' data   # rc 1 at EOF is expected
-  zle -F $fd 2>/dev/null; exec {fd}<&-
-  (( fd == _emjay_git_fd )) && _emjay_git_fd=0 _emjay_git_pid=0
-  _emjay_git_apply "$data" || return 0
-  [[ $_emjay_prompt != $old ]] && { zle .reset-prompt; zle -R } 2>/dev/null
+  zle -f nolast 2>/dev/null || :      # leave $LASTWIDGET to the user's widgets
+  local fd=$1 data= old=$_emjay_prompt REPLY
+  local -a reply
+  [[ $fd == <-> ]] && (( fd > 0 )) || return 0
+  if [[ -z $2 || $2 == hup ]]; then
+    IFS= read -r -u $fd -d '' data || :   # rc 1 at EOF is expected
+  fi
+  zle -F $fd 2>/dev/null || :
+  { exec {fd}<&- } 2>/dev/null
+  if (( fd == _emjay_git_fd )); then
+    _emjay_git_fd=0 _emjay_git_pid=0
+    # A widget may have run cd (and reset-prompt) without a precmd: a result
+    # for the repo we left must not be shown.
+    _emjay_git_find_root || :
+    if [[ $REPLY != "$_emjay_git_req_key" ]]; then
+      data=
+      _emjay_git=()
+      _emjay_seg_git=
+      _emjay_assemble
+    fi
+  fi
+  if [[ -n $data ]]; then
+    _emjay_git_apply "$data" || return 0
+  fi
+  [[ $_emjay_prompt == "$old" ]] && return 0
+  if _emjay_zle_busy; then
+    _emjay_redraw_pending=1           # redraw from zle-line-pre-redraw once it is safe
+    _emjay_zle_hook_install || :
+  else
+    { zle .reset-prompt && zle -R } 2>/dev/null || :
+  fi
+  return 0
 }
 ```
 
-Stale protection works in three layers:
+Notes on the code above:
+- `_emjay_git_update` looks up `$+commands[git]` only once `find_root` has found a repo: a miss walks the whole `$PATH` (about 10 ms on WSL, where `$PATH` carries dozens of `/mnt/c` entries), and it would otherwise run on every prompt in non-repo dirs.
+- The pid line is read into a scalar and validated with `<->`. Reading pipe data into an integer variable arithmetic-evaluates it (`path[$(cmd)]` runs `cmd`).
+- **Never signal a finished worker.** `_emjay_git_cancel` polls the pipe with `zselect -t 0 -r`. Readable means the worker has written its payload or exited, so its pid may already be reused and is not signalled. That payload is applied instead when it is for the repo we are still in (`_emjay_git_req_key == _emjay_git_key`). This keeps git info after `cd slowrepo; long-command`, where the callback never ran because ZLE was not reading. A worker that is still running is signalled: its process group under job control (`[[ -o monitor ]]`; `emulate -L zsh` keeps `monitor` in interactive shells), otherwise just its pid. There is no group-then-pid fallback.
+- **No orphaned git without job control.** Without `monitor` the worker is not a process-group leader, and killing it alone used to leave a slow `git status` running. The worker therefore runs every git call as a coproc (`_emjay_git_run`), keeps its pid, and has `trap '… kill -TERM $_emjay_git_child …; exit 143' TERM`. The trap runs even while the worker is blocked in `read -p`.
+- The worker clears any user `ZERR` trap, so a trap cannot write into the pipe. A user `TRAPEXIT`/`zshexit` does not run in the `<( )` subshell (verified).
+- **Deferred redraw (`zle -F -w`).** The handler is registered as a widget, so it sees `$LASTWIDGET` and `$ISEARCHMATCH_ACTIVE`; it starts with `zle -f nolast` so it never becomes `$LASTWIDGET` itself. `_emjay_zle_busy` is true while `ISEARCHMATCH_ACTIVE == 1` or `$LASTWIDGET` matches `*complet*|menu-*|*isearch*|*history-search*`. During isearch `$LASTWIDGET` is still the widget before it, and right after isearch it names the search widget until the next key, so the flag, not the name, detects isearch. When busy, the data is applied but `reset-prompt` is deferred: `_emjay_redraw_pending=1`, and `_emjay_line_pre_redraw` performs it from `zle-line-pre-redraw` once not busy. A precmd clears the flag.
+- **Installing the pre-redraw hook.** `_emjay_zle_hook_install` runs once per shell, on the first deferral. If `add-zle-hook-widget` already manages the hook (`$widgets[zle-line-pre-redraw] == user:azhw:zle-line-pre-redraw`), it registers through it. Otherwise it installs `_emjay_line_pre_redraw` directly, chaining to any existing user widget, which it copies to `_emjay_prev_line_pre_redraw`. A later `add-zle-hook-widget` keeps ours, because it preserves a pre-existing user widget. Nothing is autoloaded, so no non-`_emjay_` function is defined.
+- Fd inheritance: commands started from the prompt while a worker is pending inherit its read end. That is harmless, it is closed at the next callback or precmd, and it is documented in a comment rather than worked around.
+
+Stale protection works in five layers:
 1. A change of repo key in precmd clears `_emjay_git` **before** the prompt is drawn.
-2. A new request cancels the previous one: the handler is removed, the fd closed, and the worker's process group killed.
-3. `_emjay_git_apply` drops any payload whose reqid is not the latest.
+2. The `chpwd` hook (`_emjay_chpwd`) does the same at the moment of the `cd`. It sets the new key, cancels the pending request and clears the segment. This also covers a widget that runs `cd` and `reset-prompt` without a precmd. It does not start a request; the next precmd does.
+3. A new request cancels the previous one: the handler is removed and the fd closed. A worker that is still running is killed, together with its git child.
+4. The callback re-runs `find_root`. If `$PWD`'s repo is no longer the request's (`_emjay_git_req_key`), the payload is dropped and the segment cleared.
+5. `_emjay_git_apply` drops any payload whose reqid is not the latest.
 
 A `cd` within the same repo (same key) keeps the current data until the refresh arrives, which avoids flicker.
 
 ### 3.6 Renderers and assembly
 
-Raw segments may contain only these colour codes: `%F{…}`, `%f`, `%B`, `%b`. User data such as branch names, context names, namespaces and the separator is escaped with `${x//\%/%%}`, except that the separator is used verbatim. Colours are read from `EMJAY_COLOR_*` at render time (§5).
+Raw segments may contain only these colour codes: `%F{…}`, `%f`, `%B`, `%b`. User data (branch names, the short OID, the operation, context names, namespaces) goes through `_emjay_esc` (§3.1): control characters become `?`, `%` is doubled, and `!` is doubled when the user has `PROMPT_BANG` on. With `PROMPT_BANG`, the ASCII conflict glyph `!` is doubled too. The separator is used verbatim. Colours are read from `EMJAY_COLOR_*` at render time (§5).
 
 | Var | Function | Raw template | Stripped example |
 |---|---|---|---|
@@ -296,7 +398,9 @@ _emjay_status_update() {   # <code> [now=$EPOCHREALTIME]
 
 _emjay_precmd() {
   local -i code=$?           # MUST be the first statement (zsh restores $? for each precmd hook, verified)
+  [[ -o prompt_bang ]] && _emjay_bang=1 || _emjay_bang=0     # before emulate resets it
   emulate -L zsh
+  local REPLY; local -a reply  # never clobber the user's REPLY/reply
   _emjay_status_update $code
   _emjay_glyphs_select
   _emjay_git_update          # starts the worker first so it overlaps with the remaining sync work
@@ -304,17 +408,31 @@ _emjay_precmd() {
   _emjay_render_dir
   _emjay_render_status
   _emjay_assemble
+  _emjay_redraw_pending=0    # a fresh prompt is about to be drawn anyway
+  return 0
+}
+
+_emjay_chpwd() {             # cd into another repo (or out of one), also from a widget
+  # if EMJAY_SHOW_GIT is on and find_root($PWD) != _emjay_git_key:
+  #   _emjay_git_key=<new key>; _emjay_git_cancel; _emjay_git=(); _emjay_seg_git=''; _emjay_assemble
+  # (no request is started here; the next precmd does that)
 }
 ```
 
-Registration at load time:
+Registration at load time (no `add-zsh-hook` autoload, so the only new functions are `_emjay_*`):
 ```zsh
-autoload -Uz add-zsh-hook
-add-zsh-hook precmd _emjay_precmd
-add-zsh-hook preexec _emjay_preexec
+() {
+  emulate -L zsh
+  typeset -ga precmd_functions preexec_functions chpwd_functions
+  (( ${precmd_functions[(Ie)_emjay_precmd]} )) || precmd_functions+=(_emjay_precmd)
+  (( ${preexec_functions[(Ie)_emjay_preexec]} )) || preexec_functions+=(_emjay_preexec)
+  (( ${chpwd_functions[(Ie)_emjay_chpwd]} )) || chpwd_functions+=(_emjay_chpwd)
+  _emjay_glyphs_select
+  _emjay_git_cancel
+  [[ -n $_emjay_prompt ]] || _emjay_prompt="${_emjay_glyph[prompt]} "
+  return 0
+}
 setopt prompt_subst
-_emjay_glyphs_select
-_emjay_git_cancel
 PROMPT='${_emjay_prompt}'
 ```
 
@@ -322,19 +440,33 @@ An empty Enter resets the display to neutral: green `❯`, no `✘`, no `took`. 
 
 ### 3.8 install.sh contract (POSIX sh, `set -eu`)
 
-1. `src="$(cd "$(dirname "$0")" && pwd -P)/zsh/emjay.zsh-theme"`.
-2. `ZSH=${ZSH:-$HOME/.oh-my-zsh}`. If `$ZSH` is not a directory, print `emjay: oh-my-zsh not found at $ZSH` to stderr and exit 1 without changing anything.
-3. `ZSH_CUSTOM=${ZSH_CUSTOM:-$ZSH/custom}`, then `mkdir -p "$ZSH_CUSTOM/themes"` and `ln -sfn "$src" "$ZSH_CUSTOM/themes/emjay.zsh-theme"`.
-4. `rc=${ZDOTDIR:-$HOME}/.zshrc`. If it is missing, exit 1 with a message.
-5. If the uncommented lines matching `^[[:space:]]*ZSH_THEME=` are all `ZSH_THEME="emjay"` (or `'emjay'` or `emjay`) and at least one exists: print `already set` and exit 0. **In that case `.zshrc` and `.zshrc.bak` are not touched.**
-6. Otherwise:
-   - Run `cp -p "$rc" "$rc.bak"`.
-   - Replace every uncommented `ZSH_THEME=` line with `ZSH_THEME="emjay"`.
-   - If there were none, insert the line before the first line matching `^[[:space:]]*(source|\.)[[:space:]].*oh-my-zsh\.sh`. If no such line exists, append it.
-   - Use `sed` (without `-i`) or `awk` writing to a temp file in the same directory, then `cat tmp > "$rc"` to keep symlinks and permissions, then remove tmp.
-   - Commented lines are never changed.
+The environment always wins. Nothing is changed before every location is known and checked.
 
-Not allowed: `sed -i`, `readlink -f`, `stat -c`, `date -d`, `sed -r`.
+1. `src="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)/zsh/emjay.zsh-theme"`; exit 1 if it is missing.
+2. **zshrc.** If `$ZDOTDIR` is set, `rc=$ZDOTDIR/.zshrc`. Otherwise, if `~/.zshenv` assigns `ZDOTDIR` (uncommented, optionally `export`ed), resolve it (rule below) and warn on stderr that it was taken from `.zshenv`. If it cannot be resolved, exit 1 with instructions, before touching anything. Otherwise `rc=$HOME/.zshrc`.
+3. **oh-my-zsh.** If `$ZSH` is unset or empty, use a `ZSH=` assignment from the zshrc when it resolves (an unresolvable one exits 1), else `~/.oh-my-zsh`. If `$ZSH` is not a directory, print `emjay: oh-my-zsh not found at $ZSH` to stderr and exit 1 without changing anything.
+4. **Custom dir.** `$ZSH_CUSTOM` if set; else a `ZSH_CUSTOM=` assignment in the zshrc when it resolves; else `$ZSH/custom`. If the zshrc assigns `ZSH_CUSTOM` a value that cannot be resolved, exit 1 before touching anything. The message names the variable and says how to link by hand (`ln -s <src> <your ZSH_CUSTOM>/themes/emjay.zsh-theme`) or to re-run with `ZSH_CUSTOM=…` set.
+5. If `<custom>/themes/emjay.zsh-theme` exists and is **not a symlink** (a copied theme may hold local edits), exit 1 without changing anything. Then `mkdir -p "<custom>/themes"` and `ln -sfn "$src" "<custom>/themes/emjay.zsh-theme"`.
+6. If `rc` is missing, exit 1 with a message.
+7. Classify the `ZSH_THEME` assignments (rules below). If at least one exists and all of them are `emjay` (`"emjay"`, `'emjay'` or bare), print `already set` and exit 0. **In that case `.zshrc` and every backup are left untouched.** Example: `ZSH_THEME="emjay" # comment` counts as set.
+8. Otherwise:
+   - Back up with `cp -p "$rc" "$rc.bak"`. If `$rc.bak` already exists **and differs** from `$rc`, use `$rc.bak.<epoch>` instead (plus `.<pid>` if that exists too) and never overwrite the older backup. The backup path is printed.
+   - **Replace:** if any counted assignment has another value, replace only the assignment token of every counted assignment with `ZSH_THEME="emjay"`. Indentation, comments and other code on the line are kept, so `ZSH_THEME="agnoster"; DEFAULT_USER=me` becomes `ZSH_THEME="emjay"; DEFAULT_USER=me`.
+   - **Insert:** if there are no counted assignments, insert `ZSH_THEME="emjay"` before the first line that sources `oh-my-zsh.sh`. If no line does, append it and warn on stderr that it was appended and must come before oh-my-zsh.sh is sourced.
+   - Write through `awk` to a temp file in the same directory, then `cat tmp > "$rc"` to keep symlinks and permissions, then remove tmp.
+   - Comment-only lines and trailing comments are never changed.
+
+Rules (awk, quote-aware):
+- **Comment.** A comment starts at an unquoted `#` at line start or after whitespace, `;`, `&`, `|` or `(`.
+- **Counted assignment.** A `ZSH_THEME=` that starts a statement: at line start, after `;`, `&` or `|`, optionally preceded by `export`. Its value token is `"…"`, `'…'`, or a bare word up to whitespace or one of `; & | )`. A value containing `$` or a backquote is computed (e.g. `ZSH_THEME="$1"` in a function body) and is neither counted nor changed.
+- **Sourcing line.** "Sources oh-my-zsh.sh" means the code part contains `oh-my-zsh.sh` and the word `source` or `.`, anywhere on the line. This includes guarded forms such as `[ -f $ZSH/oh-my-zsh.sh ] && source $ZSH/oh-my-zsh.sh`.
+- **Which assignment counts** (`ZDOTDIR`, `ZSH`, `ZSH_CUSTOM`): an uncommented `NAME=value` or `export NAME=value` at line start. Use the last one before the sourcing line, or the last in the file when there is no sourcing line. An empty value counts as unset.
+- **Resolving a value:**
+  - Only `~` (unquoted, leading), `$HOME`, `${HOME}`, `$ZSH`, `${ZSH}` and `${XDG_CONFIG_HOME:-$HOME/.config}` are expanded. `$ZSH` must not be followed by an identifier character, so `$ZSH_CUSTOM` is not expanded as `$ZSH`.
+  - A single-quoted value is taken literally.
+  - The result must be an absolute path with no `$`, backquote or backslash left, and no glob characters when unquoted. Otherwise the value is unresolvable.
+
+Not allowed: `sed -i`, `readlink -f`, `stat -c`, `date -d`, `sed -r`. The awk programs live in single-quoted shell strings (`\047` for `'`), not in heredocs inside `$(…)`, which macOS `/bin/sh` (bash 3.2) misparses.
 
 ## 4. Kubeconfig parser spec (`_emjay_kube_parse_file`)
 
@@ -426,7 +558,7 @@ Out-of-scope input is handled gracefully: no error, and namespace falls back to 
 | Var | Default | Meaning |
 |---|---|---|
 | `EMJAY_NERD_FONT` | unset | `1` turns on Nerd Font glyphs |
-| `EMJAY_ASCII` | unset (auto) | `1` forces ASCII; `0` forces Unicode; unset picks ASCII when the locale is not UTF-8 |
+| `EMJAY_ASCII` | unset (auto) | `1` forces ASCII; `0` forces Unicode; unset picks ASCII when the shell's effective codeset (`$langinfo[CODESET]`) is not UTF-8 |
 | `EMJAY_KUBE_PROD_PATTERN` | `prod\|prd\|live` | case-insensitive ERE on the full context name; empty disables |
 | `EMJAY_CMD_MAX_DURATION` | `3` | show `took` when whole seconds exceed N (integers only; invalid values fall back to 3) |
 | `EMJAY_SHOW_DIR` / `_GIT` / `_KUBE` / `_STATUS` / `_DURATION` | on | `0` hides that segment (and for GIT and KUBE, skips the work) |
@@ -461,13 +593,22 @@ Palette. Each value goes into `%F{…}`, so 256-colour numbers or colour names b
 | Non-repo dir: no fork, segment hidden | `_emjay_git_find_root` → `''` → `_emjay_git_update` |
 | `git init` / `rm -rf .git` in the current dir | `find_root` re-walks on every precmd |
 | Fresh repo with no commits | `parse_status`: `(initial)` gives `oid=''`, branch from `branch.head` |
-| Detached HEAD (and during a rebase) | `parse_status` sets `detached=1`; `render_git` shows `➦ sha7` |
+| Detached HEAD | `parse_status` sets `detached=1`; `render_git` shows `➦ sha7` |
+| During a rebase (HEAD detached) | `collect` reads `head-name`: `⎇ topic ✖1 REBASE 1/2`. A rebase of a detached HEAD keeps `➦ sha7` |
 | Worktree or submodule (`.git` is a file) | `find_root` uses `-e .git`; `collect` gets the per-worktree `--absolute-git-dir`; the operation is read from that dir |
-| Inside `.git` or a bare repo | `find_root` (HEAD+objects+refs); `collect` sees `is-inside-work-tree=false` → `read_head` with `bare=1`, no ✔ |
+| Inside `.git` or a bare repo | `find_root` (HEAD+objects+refs); `collect` sees `is-inside-work-tree=false` → `bare=1`, HEAD from `symbolic-ref`/`rev-parse` (reftable repos keep only `ref: refs/heads/.invalid` in the HEAD file), no ✔ |
 | No upstream, or upstream gone | `parse_status`: ahead and behind default to 0 |
-| `cd` to another repo with a request pending | `git_update` clears on key change; `git_request` cancels; `git_apply` checks reqid |
+| `cd` to another repo with a request pending | `chpwd` and `git_update` clear on key change; `git_request` cancels; the callback re-checks the repo; `git_apply` checks reqid |
+| A widget runs `cd` + `reset-prompt` (no precmd) | `chpwd` clears the segment at once; a late result for the old repo is dropped by the callback |
+| `cd slowrepo; long-command` (callback never ran) | next precmd: `cancel` finds the pipe readable, applies the finished same-repo result, never signals the (possibly reused) pid |
+| Cancelled worker without job control (`no_monitor`) | the worker's TERM trap kills its coproc git; no orphaned `git status` |
+| Completion list, menu-select or Ctrl-R on screen when git info arrives | data applied, `reset-prompt` deferred to `zle-line-pre-redraw` |
 | `cd` within the same repo | same key, data kept |
-| git missing | `git_update` checks `$+commands[git]` |
+| git missing | `git_update` checks `$+commands[git]`, only inside a repo (a miss walks all of `$PATH`) |
+| Repo-local `core.fsmonitor` hook command (untrusted checkout) | status runs with `-c core.fsmonitor=false`; boolean `true` (builtin daemon) is kept |
+| Control characters / escape sequences in branch, op counters, context or namespace | `_emjay_esc` turns them into `?`; op counters must be digits |
+| User has `PROMPT_BANG` on | `!` in user data (and the ASCII conflict glyph) doubled |
+| User `TRAPZERR`, aliases (`read`, `cd`, `git`), `sh_glob`, `ignore_braces`, `ksh_arrays` | no non-zero status on the prompt path; parse-time prologue/epilogue; `emulate -L zsh` |
 | Dubious ownership on `/mnt/c`, or broken repo | `collect`: rev-parse fails → `repo=0` → hidden |
 | `git status` fails inside a work tree | `collect` falls back to `read_head` |
 | `%` or `$(…)` in a branch, context or namespace | renderers escape `%`; `PROMPT` is a static reference |
@@ -483,9 +624,10 @@ Palette. Each value goes into `%F{…}`, so 256-colour numbers or colour names b
 | `name:` nested under `extensions` | indent tracking in `parse_file` |
 | Invalid or empty prod regex | `kube_is_prod` |
 | User options (`ksh_arrays`, `rematch_pcre`, `err_exit`) | `emulate -L zsh` everywhere |
+| `LC_CTYPE=UTF-8` on Linux (invalid locale, zsh edits in ASCII) | `glyphs_select` uses `$langinfo[CODESET]` → ascii |
 | Empty Enter or ^C at the prompt | `status_update` (`_emjay_cmd_ran=0`) |
 | Signal exits (130 etc.), exit ≥ 160 | `fmt_status` |
-| Non-UTF-8 locale | `glyphs_select` → ascii |
+| Non-UTF-8 locale or codeset | `glyphs_select` → ascii |
 | Mode or env changed at runtime | `glyphs_select` fingerprint; colours and toggles read at render |
 | Every segment empty | `assemble` gives a single-line prompt |
 | Theme re-sourced | `add-zsh-hook` dedupes; `_emjay_git_cancel` at load |
@@ -500,8 +642,8 @@ The sync path is everything in `_emjay_precmd`.
 | status / duration | float arithmetic on `$EPOCHREALTIME` | 0 |
 | glyphs | one string comparison | 0 |
 | dir | constant `%~` | 0 |
-| git, non-repo | ≤ 3 `[[ -e/-f/-d ]]` checks per ancestor | **0** (no worker) |
-| git, repo | `find_root`, then `exec {fd}< <(…)` and a blocking read of the pid line (the child writes it at once) | 1 (unavoidable) |
+| git, non-repo | ≤ 3 `[[ -e/-f/-d ]]` checks per ancestor; no `$commands[git]` lookup | **0** (no worker) |
+| git, repo | `find_root`, `$+commands[git]`, then `exec {fd}< <(…)` and a blocking read of the pid line (the child writes it at once) | 1 (unavoidable); the worker then runs 3 git calls (rev-parse, config, status) off the prompt path |
 | kube | one `zstat` per file plus a key comparison. A parse (`$(<f)`, measured fork-free at 2 µs) only happens when the key changes. | 0 |
 | renderers / assemble | parameter expansion only | 0 |
 
@@ -571,6 +713,7 @@ Each item is one `test_*` function. Rendered segments are compared after `seg_te
 | `test_switch_back_without_resource` | nerd, select, `unset EMJAY_NERD_FONT`, select | `unicode` |
 | `test_render_git_nerd` | `_emjay_git=(repo 1 bare 0 branch main detached 0)`, nerd; `_emjay_render_git` | `$'\ue0a0 main \uf00c'` |
 | `test_precmd_applies_mode` | `EMJAY_NERD_FONT=1; _emjay_precmd` | `_emjay_glyph_mode == nerd` |
+| `test_ascii_when_codeset_not_utf8` | `LC_ALL=C`, then `LC_ALL=xx_XX.UTF-8` (no such locale: the codeset stays ASCII); select; then `EMJAY_ASCII=0` | setting it prints nothing; mode `ascii` although the name says UTF-8; then `unicode` with the right glyph bytes (m2) |
 
 ### tests/test_kube.zsh
 Unless stated otherwise: `unset KUBECONFIG`, and `HOME=$TT/home` has no `.kube`.
@@ -611,6 +754,8 @@ Unless stated otherwise: `unset KUBECONFIG`, and `HOME=$TT/home` has no `.kube`.
 | `test_show_toggle` | basic at default path, `EMJAY_SHOW_KUBE=0` | seg '', `_emjay_kube[display]` '' |
 | `test_no_kubectl_calls` | `$TT/bin/kubectl` and `kubectl.exe` are `#!/bin/sh` scripts that create `$TT/called`; `PATH=$TT/bin:$PATH; rehash`; basic at default path; `_emjay_precmd` | `$TT/called` does not exist |
 | `test_ctx_name_not_evaluated` | `current-context: 'x$(:>pwned)%F'`; `_emjay_precmd`; `: ${(%%)PROMPT}` | `$TT/pwned` does not exist; seg `⎈ x$(:>pwned)%F/default` |
+| `test_ctx_control_chars` | context and namespace containing ESC/BEL bytes | no ESC/BEL in the raw seg; display `x?]0;t?y/n?[2Js` (m4) |
+| `test_prompt_bang_escapes_names` | `current-context: 'a!b'`; `setopt prompt_bang`; precmd; then `unsetopt prompt_bang`; precmd | raw seg contains `a!!b` and `${(%%)seg}` contains `a!b`; without PROMPT_BANG the raw seg has `a!b` |
 
 ### tests/test_git_parse.zsh (no git needed)
 The Appendix B texts are used as input.
@@ -647,6 +792,10 @@ The Appendix B texts are used as input.
 | `test_serialize_roundtrip` | full assoc → `payload="$_emjay_git_reqid"$'\n'$REPLY`; `_emjay_git=()`; `_emjay_git_apply $payload` | returns 0; assoc equal to the original |
 | `test_apply_rejects_stale` | `_emjay_git_reqid=5`; payload line 1 = `4` | returns 1; assoc unchanged |
 | `test_apply_rejects_garbage` | `''`, `abc\nrepo=1` | returns 1 for both |
+| `test_render_control_chars` | branch and op with ESC, BEL, CR | none of them in the raw seg; stripped `⎇ a?[31mb? ✔ X?Y?` (m4) |
+| `test_op_counters_must_be_numbers` | `msgnum` = ESC sequence; `last` = `3x` | `REBASE` for both (m4) |
+| `test_rebase_head_name` | `head-name` in rebase-merge / rebase-apply / `detached HEAD` / none | `feature/x`, `topic`, `''`, `''` |
+| `test_read_head_reftable_placeholder` | HEAD = `ref: refs/heads/.invalid` | returns 1, keys unchanged |
 
 ### tests/test_git_repo.zsh (real git, sync)
 Each test builds its repos under `$TT`, `cd`s, and calls `_emjay_precmd`. `sha7` means `${$(git rev-parse HEAD)[1,7]}`.
@@ -663,7 +812,8 @@ Each test builds its repos under `$TT`, `cd`s, and calls `_emjay_precmd`. `sha7`
 | `test_detached` | `checkout -q --detach` | `➦ <sha7> ✔`, detached 1 |
 | `test_merge_conflict` | branch `other` changes `a.txt`; main changes it differently; `git merge other` | `⎇ main ✖1 MERGING` |
 | `test_cherry_pick_conflict` | same setup; `git cherry-pick other` | `⎇ main ✖1 CHERRY-PICKING` |
-| `test_rebase_conflict` | `f`=base on main; topic: `f`=t1, then add `g`; main: `f`=m1; on topic `git rebase main` | `➦ <sha7 of main> ✖1 REBASE 1/2` |
+| `test_rebase_conflict` | `f`=base on main; topic: `f`=t1, then add `g`; main: `f`=m1; on topic `git rebase main` | `⎇ topic ✖1 REBASE 1/2` (branch from `head-name`, as in the requirements mock), `detached` 0, head in the dirty colour |
+| `test_rebase_detached_start_keeps_sha` | as above but `checkout --detach topic` before rebasing | `➦ <sha7 of main> ✖1 REBASE 1/1` |
 | `test_bisect` | `git bisect start` | `⎇ main ✔ BISECTING` |
 | `test_inside_dot_git` | cd `r/.git`, then `r/.git/refs` | `⎇ main`, bare 1, key `$TT/r/.git` |
 | `test_worktree` | `git -C r worktree add -q $TT/wt -b feature`; cd `wt` | `⎇ feature ✔`; `${_emjay_git[gitdir]:A} == ${:-$TT/r/.git/worktrees/wt}:A`; key `$TT/wt` |
@@ -671,7 +821,10 @@ Each test builds its repos under `$TT`, `cd`s, and calls `_emjay_precmd`. `sha7`
 | `test_subdir_same_key` | cd `r/x/y` | same seg as at the root; key `$TT/r` |
 | `test_show_git_off` | `EMJAY_SHOW_GIT=0` | seg '', `${#_emjay_git}==0` |
 | `test_git_missing` | `PATH=$TT/emptybin` (empty dir) inside a repo; `capture_err _emjay_precmd` | seg ''; stderr '' |
-| `test_branch_name_not_evaluated` | `checkout -qb 'x$(:>pwned)%F'`; precmd; `: ${(%%)PROMPT}` | no `$TT/r/pwned`; seg `⎇ x$(:>pwned)%F ✔` |
+| `test_branch_name_not_evaluated` | `checkout -qb 'x$(echo>pwned)%F'` (`:` is not allowed in a ref name, so the original `x$(:>pwned)%F` cannot be created); precmd; `: ${(%%)PROMPT}` | no `pwned`; seg `⎇ x$(echo>pwned)%F ✔` |
+| `test_fsmonitor_hook_not_run` | `core.fsmonitor` = a script that creates `pwned`; precmd | `⎇ main ✔`, no `pwned`; control: plain `git status` then does create it (m5) |
+| `test_fsmonitor_boolean_kept` | `core.fsmonitor=true`, git wrapper logging its arguments | the status call has no `core.fsmonitor=false` (m5) |
+| `test_reftable_head` (skipped without reftable) | `init --ref-format=reftable`; work tree, `.git`, `.git` detached, bare clone | `⎇ main ✔`, `⎇ main`, `➦ <sha7>`, `⎇ main` |
 
 ### tests/test_git_async.zsh (`EMJAY_GIT_ASYNC=1`)
 Setup: `mkrepo $TT/A alpha`, `mkrepo $TT/B beta`, `mkdir -p $TT/A/sub $TT/plain`.
@@ -691,6 +844,15 @@ Setup: `mkrepo $TT/A alpha`, `mkrepo $TT/B beta`, `mkdir -p $TT/A/sub $TT/plain`
 | `test_worker_wire_format` | `exec {fd}< <(_emjay_git_worker 42 $TT/A)`; `read -u $fd pid`; `IFS= read -r -u $fd -d '' rest` | pid matches `<->`; line 1 of rest is `42`; rest contains the lines `repo=1` and `branch=alpha` |
 | `test_worker_nonrepo_payload` | worker 7 on `plain` | rest lines are `7` and `repo=0` |
 | `test_reqid_increments` | in A: precmd 3 times, draining each | reqid increases by 1 each time |
+| `test_cancel_spares_finished_worker_pid` | A: precmd; wait until the pipe is readable; set `_emjay_git_pid` to an unrelated process; `_emjay_git_cancel` | that process is still alive (M1) |
+| `test_cancel_applies_finished_result_same_repo` | A: precmd; wait until readable; precmd again | `⎇ alpha ✔` at once, a new request pending (M1) |
+| `test_cancel_discards_finished_result_other_repo` | A: precmd; wait until readable; `builtin cd -q B`; precmd | seg '', no `alpha`; drain → beta |
+| `test_worker_pid_line_not_evaluated` | worker prints `path[$(: > pwned)]` as its pid line | `_emjay_git_pid` 0, no `pwned` (M1) |
+| `test_callback_drops_result_after_cd_without_precmd` | A drained; precmd; `builtin cd -q B`; drain | seg '', `_emjay_git` empty, no `alpha` (m1) |
+| `test_chpwd_clears_git_segment` | A drained; precmd; `cd B` (no precmd) | seg '' and no `alpha` at once, pending request cancelled, key B; `cd A/sub` keeps alpha (m1) |
+| `test_zle_busy_decision` | `LASTWIDGET` / `ISEARCHMATCH_ACTIVE` combinations | busy for completion/menu widgets, `history-search-*` and `ISEARCHMATCH_ACTIVE=1`; not for typing, vi, or a finished isearch (m3) |
+| `test_callback_defers_redraw_when_busy` | callback with `LASTWIDGET=expand-or-complete`, then pre-redraw hook while busy / not busy | data applied, `_emjay_redraw_pending` 1 → 1 → 0; no deferral while typing; precmd clears it (m3) |
+| `test_cancelled_worker_leaves_no_git_running` | no `monitor`; git wrapper whose `status` execs `sleep 30` and logs its pid; precmd in A, then 4 quick cd+precmd, cancel | no logged pid is alive (m8) |
 
 ### tests/test_render.zsh
 | Test | Setup | Expected |
@@ -712,6 +874,8 @@ Setup: `mkrepo $TT/A alpha`, `mkrepo $TT/B beta`, `mkdir -p $TT/A/sub $TT/plain`
 | `test_precmd_took` | `_emjay_preexec; _emjay_cmd_start=$(( EPOCHREALTIME - 5 )); true; _emjay_precmd` | took `took 5s` |
 | `test_precmd_works_with_empty_path` | basic kubeconfig at default path; cd plain; `PATH=$TT/emptybin`; `capture_err _emjay_precmd` | stderr ''; kube `⎈ dev/team-a` |
 | `test_prompt_wiring` | source the theme a second time | `PROMPT == '${_emjay_prompt}'`; `[[ -o prompt_subst ]]`; `_emjay_precmd` appears exactly once in `precmd_functions` and `_emjay_preexec` exactly once in `preexec_functions` |
+| `test_chpwd_hook_registered_once` | source the theme twice more | `_emjay_chpwd` exactly once in `chpwd_functions` |
+| `test_no_zerr_on_prompt_path` | a counting `TRAPZERR`; precmd in non-repo / with kubeconfig / after a failure (`! true`) / empty Enter / repo sync / async + drain / chpwd cancel / missing kubeconfig / toggles off | the trap never fires (m7) |
 | `test_perf_nonrepo` (skipped if `EMJAY_TEST_SKIP_PERF=1`) | cd plain, basic kubeconfig, one warm-up precmd, then 50× | average under 10 ms |
 
 ### tests/test_static.zsh
@@ -723,6 +887,9 @@ Setup: `mkrepo $TT/A alpha`, `mkrepo $TT/B beta`, `mkdir -p $TT/A/sub $TT/plain`
 | `test_no_subshell_on_sync_path` | For `_emjay_precmd _emjay_preexec _emjay_status_update _emjay_glyphs_select _emjay_glyphs_load _emjay_fmt_duration _emjay_fmt_status _emjay_kube_update _emjay_kube_files _emjay_kube_cache_key _emjay_kube_load _emjay_kube_parse_file _emjay_yaml_unquote _emjay_kube_shorten _emjay_kube_is_prod _emjay_render_dir _emjay_render_git _emjay_render_kube _emjay_render_status _emjay_assemble _emjay_git_update _emjay_git_find_root`: `${functions[f]}` contains no backtick, and every `$(` is followed by optional spaces and `<` |
 | `test_source_silent_outside_omz` | `zsh -f -c 'source $1' _ <theme>` | stdout and stderr both empty |
 | `test_namespace_hygiene` | in `zsh -f`, compare `${(k)functions}` before and after sourcing | every new name matches `_emjay_*` |
+| `test_theme_is_ascii` | theme bytes in the C locale | no non-ASCII or control bytes (glyphs are escapes) |
+| `test_git_lookup_after_find_root` | `${functions[_emjay_git_update]}` | `_emjay_git_find_root` comes before the `commands[git]` lookup |
+| `test_source_under_hostile_options` | `zsh -f` with `sh_glob ignore_braces ignore_close_braces ksh_arrays` and aliases for `read`, `cd`, `git`; source twice; precmd sync and async + drain in a repo | options and aliases restored; each hook once; `%F{76}⎇ main ✔%f` both times; stderr empty (m6) |
 
 ### tests/test_install.zsh
 Setup: `H=$TT/home`, `mkdir -p $H/.oh-my-zsh/custom`. `.zshrc` contains `export ZSH="$HOME/.oh-my-zsh"`, `# ZSH_THEME="old"`, `ZSH_THEME="robbyrussell"`, `source $ZSH/oh-my-zsh.sh`. Run: `HOME=$H ZSH=$H/.oh-my-zsh sh $EMJAY_ROOT/install.sh` with `ZSH_CUSTOM` and `ZDOTDIR` unset.
@@ -736,6 +903,19 @@ Setup: `H=$TT/home`, `mkdir -p $H/.oh-my-zsh/custom`. `.zshrc` contains `export 
 | `test_install_respects_zsh_custom` | with `ZSH_CUSTOM=$TT/cust` the link is at `$TT/cust/themes/emjay.zsh-theme` |
 | `test_install_zdotdir` | with `ZDOTDIR=$TT/zd`, it edits `$TT/zd/.zshrc` |
 | `test_install_missing_omz_fails` | with `ZSH=$TT/none`: exit ≠ 0, `.zshrc` unchanged, no `.bak` |
+| `test_install_zsh_custom_from_zshrc` | `.zshrc` has `ZSH_CUSTOM="$HOME/dotfiles/omz-custom"` (not exported) | link under `$H/dotfiles/omz-custom/themes`, none under `$ZSH/custom` (M2) |
+| `test_install_zsh_custom_export_with_zsh_var` | `export ZSH_CUSTOM=${ZSH}/my-custom   # mine` | link under `$H/.oh-my-zsh/my-custom/themes` (M2) |
+| `test_install_zsh_custom_unresolvable_fails` | `ZSH_CUSTOM="$(dotfiles-dir)/omz"` | exit ≠ 0; stderr names `ZSH_CUSTOM` and `ln -s`; nothing changed, no link (M2) |
+| `test_install_zsh_from_zshrc` | `ZSH="$HOME/.config/oh-my-zsh"` in `.zshrc`, `ZSH` empty in the env | link under `$H/.config/oh-my-zsh/custom/themes` |
+| `test_install_zdotdir_from_zshenv` | `~/.zshenv`: `export ZDOTDIR="$HOME/.config/zsh"`; env ZDOTDIR unset | that `.zshrc` edited, `~/.zshrc` untouched, stderr warns about ZDOTDIR (M2) |
+| `test_install_zdotdir_unresolvable_fails` | `~/.zshenv`: `ZDOTDIR=$(find-my-zdotdir)` | exit ≠ 0, nothing changed (M2) |
+| `test_install_replaces_only_the_token` | `ZSH_THEME="agnoster"; DEFAULT_USER=me` and `␠␠ZSH_THEME=robbyrussell  # old one` | `ZSH_THEME="emjay"; DEFAULT_USER=me` and `␠␠ZSH_THEME="emjay"  # old one`; second run says already set (M3) |
+| `test_install_comment_after_emjay_is_set` | `ZSH_THEME="emjay" # my theme` | already set; file untouched; no `.bak` (M3) |
+| `test_install_ignores_computed_theme` | `ZSH_THEME="$1"` on its own line in a function body, `x=1; ZSH_THEME=$PICKED` | both untouched; `ZSH_THEME="emjay"` inserted before the source line (M3) |
+| `test_install_guarded_source_line` | `[ -f $ZSH/oh-my-zsh.sh ] && source $ZSH/oh-my-zsh.sh`, no ZSH_THEME | inserted directly before it; stderr empty (m9) |
+| `test_install_no_source_line_warns` | `.zshrc` never sources oh-my-zsh | appended; stderr contains `appended` (m9) |
+| `test_install_keeps_older_backup` | an unrelated `.zshrc.bak` exists | kept; exactly one `.zshrc.bak.<epoch>` equal to the original; stdout names it |
+| `test_install_refuses_regular_file_at_link` | regular file at `custom/themes/emjay.zsh-theme` | exit ≠ 0; file, `.zshrc` unchanged; no `.bak` |
 
 ## Appendix A: fixtures (`tests/fixtures/kube/`, exact content)
 
@@ -963,6 +1143,8 @@ Each block is the literal input, one line per entry. In B2 the type-2 line has a
 3. Ctrl-C at the prompt still works while a slow status runs.
 4. No `[1] done` job messages appear.
 5. Run on macOS `/bin/zsh` 5.9 with Apple git.
+6. With a slow `git status` pending: a completion list or menu-select, Ctrl-R, typing mid-line and vi command mode are not disturbed when the info arrives; the prompt repaints after the menu or search ends (scripted once in tmux: 2026-10-10).
+7. A widget that runs `cd` + `zle reset-prompt` drops the old repo's info at once and no late result reappears.
 
 ## Critical files for implementation
 - `/home/mujeeb/projects/emjay-configs/zsh/emjay.zsh-theme` (new)
@@ -977,10 +1159,20 @@ Verified on this box (zsh 5.9.2, git 2.53):
 - `zstat -H h -F '%s.%N'` gives nanosecond mtime.
 - `$!` is not set for `<(…)`, so the pid must come over the pipe.
 - `zle` with no arguments returns 1 outside ZLE, and `zle -F` is inert in scripts.
-- `$'\u2387'` gives UTF-8 bytes even with `LC_ALL=C`.
+- A `$'\u2387'` escape is converted with the locale in force at conversion time. In the sourced theme that can be after a switch to `LC_ALL=C`, where it fails with `character not in range`. Hence byte escapes in the theme (§3.2).
 - An invalid `=~` regex prints to stderr and returns 1.
 - `$signals[code-127]` maps 130→INT, 137→KILL, 141→PIPE, 143→TERM.
 - Inside `.git`, rev-parse prints `false` for the work-tree check and `git status` fails.
 - `~/.kube/config` uses kubectl's zero-indented sequence layout.
 
-Not verified (the safety checker blocked those test commands): that `${+assoc[key]}` returns 1 for a key with an empty value, and the `(M)`-filter counting pattern. Both are standard zsh, but the implementer should confirm them. That `zle .reset-prompt` works from a non-widget `zle -F` handler is also unverified here; it relies on OMZ using the same pattern on zsh 5.9, and it is covered by manual check 1.
+- `${+assoc[key]}` is 1 for a key whose value is empty.
+- `${#${(M)arr:#pat}}` counts matching elements in an assignment; inside double quotes it needs `(@M)`, or it measures the joined string.
+- `zle .reset-prompt` + `zle -R` from a `zle -F` handler repaints the prompt without a keypress (the same pattern as OMZ's `_omz_async_callback`; checked in a pty and in tmux).
+- `emulate -L zsh` keeps `monitor` in interactive shells.
+- Reading pipe data into an integer variable arithmetic-evaluates it: `path[$(cmd)]` runs `cmd`.
+- An `(( expr ))` statement that evaluates to 0 inside a function fires a user `TRAPZERR`. A function whose last statement fails does not, when it is called from a condition or as `f || :`.
+- A user `TRAPEXIT`/`zshexit` does not run in a `<( )` worker; a worker's TERM trap runs while it is blocked in `read -p` on a coproc.
+- `add-zle-hook-widget` keeps an existing user `zle-line-pre-redraw` widget when it installs its dispatcher.
+- A repo-local `core.fsmonitor` hook command runs under plain `git status`, and `-c core.fsmonitor=false` stops it; `core.fsmonitor=true` works on Linux git 2.53.
+- `git init --ref-format=reftable` writes `ref: refs/heads/.invalid` to HEAD.
+- `LC_CTYPE=UTF-8` with no other locale variables gives codeset `ANSI_X3.4-1968` on Linux.

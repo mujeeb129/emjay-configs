@@ -368,4 +368,30 @@ test_ctx_name_not_evaluated() {
   assert_eq "$REPLY" "${UG[kube]} $ctx/default" "kube segment for a hostile context name"
 }
 
+# ------------------------------------------------------------ review fixes
+
+test_ctx_control_chars() {                       # m4: escape sequences in names
+  print -r -- $'current-context: "x\e]0;t\ay"\ncontexts:\n- context:\n    namespace: "n\e[2Js"\n  name: "x\e]0;t\ay"' > $TT/k.yaml
+  KUBECONFIG=$TT/k.yaml
+  _emjay_kube_update
+  assert_not_contains "$_emjay_seg_kube" $'\e' "raw kube segment contains ESC"
+  assert_not_contains "$_emjay_seg_kube" $'\a' "raw kube segment contains BEL"
+  assert_eq "$_emjay_kube[display]" 'x?]0;t?y/n?[2Js' "_emjay_kube[display] with control characters"
+  seg_text kube
+  assert_eq "$REPLY" "${UG[kube]} x?]0;t?y/n?[2Js" "kube segment with control characters"
+}
+
+test_prompt_bang_escapes_names() {               # nit: PROMPT_BANG turns ! into history numbers
+  mkdir -p $HOME/.kube
+  print -r -- "current-context: 'a!b'" > $HOME/.kube/config
+  setopt prompt_bang
+  _emjay_precmd
+  assert_contains "$_emjay_seg_kube" 'a!!b' "raw kube segment with PROMPT_BANG on"
+  assert_contains "${(%%)_emjay_seg_kube}" 'a!b' "fully expanded kube segment with PROMPT_BANG on"
+  unsetopt prompt_bang
+  _emjay_precmd
+  assert_contains "$_emjay_seg_kube" 'a!b' "raw kube segment with PROMPT_BANG off"
+  assert_not_contains "$_emjay_seg_kube" 'a!!b' "raw kube segment with PROMPT_BANG off"
+}
+
 run_tests

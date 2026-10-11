@@ -162,4 +162,204 @@ test_install_missing_omz_fails() {
   assert_fail _t_exists $TT/none
 }
 
+# ------------------------------------------------- review fixes (M2 M3 m9)
+
+# _t_rc <content>: write $H/.zshrc (exact bytes) and set ORIG to them.
+_t_rc() {
+  print -rn -- "$1" > $H/.zshrc
+  ORIG=$1
+}
+
+test_install_zsh_custom_from_zshrc() {          # M2: unexported ZSH_CUSTOM in .zshrc
+  _t_setup
+  _t_rc 'export ZSH="$HOME/.oh-my-zsh"
+ZSH_CUSTOM="$HOME/dotfiles/omz-custom"
+ZSH_THEME="robbyrussell"
+source $ZSH/oh-my-zsh.sh
+'
+  _t_install_ok "install with ZSH_CUSTOM only in .zshrc"
+  local link=$H/dotfiles/omz-custom/themes/emjay.zsh-theme
+  assert_ok test -L $link
+  assert_eq "${link:A}" "${THEME:A}" "symlink $link target (compared with :A)"
+  assert_fail _t_exists $H/.oh-my-zsh/custom/themes/emjay.zsh-theme
+}
+
+test_install_zsh_custom_export_with_zsh_var() {  # M2: export form, ${ZSH} expanded
+  _t_setup
+  _t_rc 'export ZSH="$HOME/.oh-my-zsh"
+export ZSH_CUSTOM=${ZSH}/my-custom   # mine
+source $ZSH/oh-my-zsh.sh
+'
+  _t_install_ok "install with export ZSH_CUSTOM=\${ZSH}/my-custom"
+  assert_ok test -L $H/.oh-my-zsh/my-custom/themes/emjay.zsh-theme
+  assert_fail _t_exists $H/.oh-my-zsh/custom/themes/emjay.zsh-theme
+}
+
+test_install_zsh_custom_unresolvable_fails() {   # M2: refuse before touching anything
+  _t_setup
+  _t_rc 'export ZSH="$HOME/.oh-my-zsh"
+ZSH_CUSTOM="$(dotfiles-dir)/omz"
+ZSH_THEME="robbyrussell"
+source $ZSH/oh-my-zsh.sh
+'
+  _t_install
+  local -i rc=$?
+  assert_ne "$rc" 0 "install with an unresolvable ZSH_CUSTOM: exit status"
+  _t_slurp $TT/inst.err
+  assert_contains "$REPLY" "ZSH_CUSTOM" "stderr names the variable"
+  assert_contains "$REPLY" "ln -s" "stderr says how to link by hand"
+  _t_slurp $H/.zshrc
+  assert_eq "$REPLY" "$ORIG" ".zshrc unchanged"
+  assert_fail _t_exists $H/.zshrc.bak
+  assert_fail _t_exists $H/.oh-my-zsh/custom/themes/emjay.zsh-theme
+}
+
+test_install_zsh_from_zshrc() {                  # M2: unexported ZSH at a non-default path
+  _t_setup
+  assert_ok mkdir -p $H/.config/oh-my-zsh/custom
+  _t_rc 'ZSH="$HOME/.config/oh-my-zsh"
+ZSH_THEME="robbyrussell"
+source $ZSH/oh-my-zsh.sh
+'
+  _t_install_ok "install with ZSH only in .zshrc" ZSH=
+  assert_ok test -L $H/.config/oh-my-zsh/custom/themes/emjay.zsh-theme
+  assert_fail _t_exists $H/.oh-my-zsh/custom/themes/emjay.zsh-theme
+}
+
+test_install_zdotdir_from_zshenv() {             # M2: ZDOTDIR set in ~/.zshenv only
+  _t_setup
+  assert_ok mkdir -p $H/.config/zsh
+  print -r -- 'export ZDOTDIR="$HOME/.config/zsh"' > $H/.zshenv
+  print -rn -- "$STD_ZSHRC" > $H/.config/zsh/.zshrc
+  _t_install_ok "install with ZDOTDIR only in ~/.zshenv"
+  _t_slurp $H/.config/zsh/.zshrc
+  assert_eq "$REPLY" "$STD_ZSHRC_AFTER" "\$ZDOTDIR/.zshrc after install, whole file"
+  _t_slurp $H/.zshrc
+  assert_eq "$REPLY" "$ORIG" "\$HOME/.zshrc untouched"
+  _t_slurp $TT/inst.err
+  assert_contains "$REPLY" "ZDOTDIR" "stderr warns about the unexported ZDOTDIR"
+}
+
+test_install_zdotdir_unresolvable_fails() {      # M2
+  _t_setup
+  print -r -- 'ZDOTDIR=$(find-my-zdotdir)' > $H/.zshenv
+  _t_install
+  local -i rc=$?
+  assert_ne "$rc" 0 "install with an unresolvable ZDOTDIR in ~/.zshenv: exit status"
+  _t_slurp $H/.zshrc
+  assert_eq "$REPLY" "$ORIG" ".zshrc unchanged"
+  assert_fail _t_exists $H/.oh-my-zsh/custom/themes/emjay.zsh-theme
+}
+
+test_install_replaces_only_the_token() {         # M3
+  _t_setup
+  _t_rc 'export ZSH="$HOME/.oh-my-zsh"
+ZSH_THEME="agnoster"; DEFAULT_USER=me
+  ZSH_THEME=robbyrussell  # old one
+source $ZSH/oh-my-zsh.sh
+'
+  _t_install_ok "install over ZSH_THEME lines with other code"
+  _t_slurp $H/.zshrc
+  assert_eq "$REPLY" 'export ZSH="$HOME/.oh-my-zsh"
+ZSH_THEME="emjay"; DEFAULT_USER=me
+  ZSH_THEME="emjay"  # old one
+source $ZSH/oh-my-zsh.sh
+' ".zshrc after install, whole file"
+  _t_install_ok "second install"
+  _t_slurp $TT/inst.out
+  assert_contains "$REPLY" "already set" "second install: stdout"
+}
+
+test_install_comment_after_emjay_is_set() {      # M3: same token parse for "already set"
+  _t_setup
+  _t_rc 'ZSH_THEME="emjay" # my theme
+source $ZSH/oh-my-zsh.sh
+'
+  _t_install_ok "install over ZSH_THEME=\"emjay\" # comment"
+  _t_slurp $TT/inst.out
+  assert_contains "$REPLY" "already set" "stdout"
+  _t_slurp $H/.zshrc
+  assert_eq "$REPLY" "$ORIG" ".zshrc unchanged"
+  assert_fail _t_exists $H/.zshrc.bak
+}
+
+test_install_ignores_computed_theme() {          # M3: ZSH_THEME="$1" in a function body
+  _t_setup
+  _t_rc 'export ZSH="$HOME/.oh-my-zsh"
+set_theme() {
+  ZSH_THEME="$1"
+}
+x=1; ZSH_THEME=$PICKED
+source $ZSH/oh-my-zsh.sh
+'
+  _t_install_ok "install with only computed ZSH_THEME values"
+  _t_slurp $H/.zshrc
+  assert_eq "$REPLY" 'export ZSH="$HOME/.oh-my-zsh"
+set_theme() {
+  ZSH_THEME="$1"
+}
+x=1; ZSH_THEME=$PICKED
+ZSH_THEME="emjay"
+source $ZSH/oh-my-zsh.sh
+' ".zshrc after install, whole file"
+}
+
+test_install_guarded_source_line() {             # m9
+  _t_setup
+  _t_rc 'export ZSH="$HOME/.oh-my-zsh"
+[ -f $ZSH/oh-my-zsh.sh ] && source $ZSH/oh-my-zsh.sh
+'
+  _t_install_ok "install with a guarded source line"
+  _t_slurp $H/.zshrc
+  assert_eq "$REPLY" 'export ZSH="$HOME/.oh-my-zsh"
+ZSH_THEME="emjay"
+[ -f $ZSH/oh-my-zsh.sh ] && source $ZSH/oh-my-zsh.sh
+' ".zshrc after install, whole file"
+  _t_slurp $TT/inst.err
+  assert_eq "$REPLY" "" "stderr"
+}
+
+test_install_no_source_line_warns() {            # m9
+  _t_setup
+  _t_rc 'alias ll="ls -l"
+'
+  _t_install_ok "install into a .zshrc that never sources oh-my-zsh"
+  _t_slurp $H/.zshrc
+  assert_eq "$REPLY" 'alias ll="ls -l"
+ZSH_THEME="emjay"
+' ".zshrc after install, whole file"
+  _t_slurp $TT/inst.err
+  assert_contains "$REPLY" "appended" "stderr warns that the line was appended"
+}
+
+test_install_keeps_older_backup() {              # nit: never clobber a different .zshrc.bak
+  _t_setup
+  print -r -- "PRECIOUS older backup" > $H/.zshrc.bak
+  _t_install_ok "install with an unrelated .zshrc.bak present"
+  _t_slurp $H/.zshrc.bak
+  assert_eq "$REPLY" $'PRECIOUS older backup\n' ".zshrc.bak untouched"
+  local -a baks
+  baks=($H/.zshrc.bak.<->(N))
+  assert_eq "${#baks}" 1 "number of .zshrc.bak.<epoch> files"
+  _t_slurp ${baks[1]-/nonexistent}
+  assert_eq "$REPLY" "$ORIG" "${baks[1]:t} equals the original .zshrc"
+  _t_slurp $TT/inst.out
+  assert_contains "$REPLY" "${baks[1]-<none>}" "stdout names the backup"
+}
+
+test_install_refuses_regular_file_at_link() {    # nit: a copied theme may hold local edits
+  _t_setup
+  assert_ok mkdir -p $H/.oh-my-zsh/custom/themes
+  print -r -- "# my local tweaks" > $H/.oh-my-zsh/custom/themes/emjay.zsh-theme
+  _t_install
+  local -i rc=$?
+  assert_ne "$rc" 0 "install over a regular file: exit status"
+  assert_fail test -L $H/.oh-my-zsh/custom/themes/emjay.zsh-theme
+  _t_slurp $H/.oh-my-zsh/custom/themes/emjay.zsh-theme
+  assert_eq "$REPLY" $'# my local tweaks\n' "the regular file is untouched"
+  _t_slurp $H/.zshrc
+  assert_eq "$REPLY" "$ORIG" ".zshrc unchanged"
+  assert_fail _t_exists $H/.zshrc.bak
+}
+
 run_tests

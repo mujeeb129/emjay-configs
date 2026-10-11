@@ -80,6 +80,59 @@ test_source_silent_outside_omz() {
   assert_eq "$REPLY" "" "stderr of 'zsh -f -c source theme'"
 }
 
+test_theme_is_ascii() {                         # nit: glyphs as escapes, never literal bytes
+  local -a bad
+  () {
+    local LC_ALL=C
+    local -a lines
+    lines=("${(@f)$(<$THEME)}")
+    bad=("${(@M)lines:#*[^[:print:][:blank:]]*}")
+  }
+  assert_eq "${#bad}" 0 "lines of the theme with non-ASCII or control bytes (first: ${(V)bad[1]-})"
+}
+
+test_git_lookup_after_find_root() {             # nit: $+commands[git] walks PATH on a miss
+  local body=${functions[_emjay_git_update]}
+  local before=${body%%'commands[git]'*}
+  assert_ne "$before" "$body" "_emjay_git_update checks commands[git]"
+  assert_contains "$before" _emjay_git_find_root "_emjay_git_update: find_root runs before the commands[git] lookup"
+}
+
+test_source_under_hostile_options() {           # m6: parse-time options and aliases
+  assert_ok mkrepo $TT/r
+  zsh -f -c '
+    setopt sh_glob ignore_braces ignore_close_braces ksh_arrays
+    alias read="read -e" cd="cd -P" git="git --no-pager -c color.ui=always"
+    source $1
+    source $1
+    [[ -o sh_glob && -o ignore_braces && -o ignore_close_braces && -o ksh_arrays && -o aliases ]] ||
+      builtin print -r -- "options not restored"
+    () {
+      emulate -L zsh
+      print -r -- "hooks ${#${(@M)precmd_functions:#_emjay_precmd}} ${#${(@M)preexec_functions:#_emjay_preexec}} ${#${(@M)chpwd_functions:#_emjay_chpwd}}"
+    }
+    builtin cd -q -- $2
+    EMJAY_GIT_ASYNC=0
+    _emjay_precmd
+    builtin print -r -- "sync $_emjay_seg_git"
+    EMJAY_GIT_ASYNC=1
+    builtin cd -q -- /
+    _emjay_precmd
+    builtin cd -q -- $2
+    _emjay_precmd
+    _emjay_git_callback $_emjay_git_fd
+    builtin print -r -- "async $_emjay_seg_git"
+  ' _ $THEME $TT/r > $TT/out 2> $TT/err
+  local want="%F{76}${UG[branch]} main ${UG[clean]}%f"
+  _t_slurp $TT/out
+  assert_eq "$REPLY" "hooks 1 1 1
+sync $want
+async $want
+" "stdout of the hostile-options shell"
+  _t_slurp $TT/err
+  assert_eq "$REPLY" "" "stderr of the hostile-options shell"
+}
+
 test_namespace_hygiene() {
   zsh -f -c '
     typeset -a before after

@@ -174,6 +174,50 @@ test_prompt_wiring() {
   assert_eq "${#${(@M)preexec_functions:#_emjay_preexec}}" 1 "times _emjay_preexec is in preexec_functions (${preexec_functions[*]})"
 }
 
+test_chpwd_hook_registered_once() {             # m1: chpwd hook, deduped like the others
+  source $EMJAY_ROOT/zsh/emjay.zsh-theme
+  source $EMJAY_ROOT/zsh/emjay.zsh-theme
+  assert_eq "${#${(@M)chpwd_functions:#_emjay_chpwd}}" 1 "times _emjay_chpwd is in chpwd_functions (${chpwd_functions[*]})"
+}
+
+test_no_zerr_on_prompt_path() {                 # m7: a user TRAPZERR must not fire per prompt
+  kube_fixture basic
+  local kc=$REPLY
+  mkdir -p $TT/plain $HOME/.kube
+  assert_ok mkrepo $TT/A alpha
+  assert_ok mkrepo $TT/B beta
+  print -r -- x >> $TT/A/a.txt
+  typeset -ga _t_zerr
+  _t_zerr=()
+  TRAPZERR() { _t_zerr+=("${funcstack[2]-top}") }
+  cd $TT/plain
+  _emjay_precmd                                   # non-repo, no kubeconfig
+  cp -- $kc $HOME/.kube/config
+  _emjay_precmd                                   # kubeconfig parsed
+  _emjay_preexec; ! true; _emjay_precmd           # failed command (! does not trip ZERR)
+  _emjay_precmd                                   # empty Enter
+  _emjay_cmd_ran=1 _emjay_cmd_start=100
+  _emjay_status_update 0 100                      # zero duration
+  _emjay_fmt_duration 60; _emjay_fmt_duration 3600; _emjay_fmt_duration 86400
+  cd $TT/A
+  _emjay_precmd                                   # repo, sync
+  EMJAY_GIT_ASYNC=1
+  _emjay_precmd
+  _emjay_git_callback $_emjay_git_fd              # async + drain
+  _emjay_precmd
+  cd $TT/B                                        # chpwd cancels A's pending request
+  _emjay_precmd
+  _emjay_git_callback $_emjay_git_fd
+  cd $TT/plain
+  _emjay_precmd
+  KUBECONFIG=$TT/nope.yaml
+  _emjay_precmd                                   # missing kubeconfig
+  EMJAY_SHOW_GIT=0 EMJAY_SHOW_KUBE=0
+  _emjay_precmd
+  unfunction TRAPZERR
+  assert_eq "${(j: | :)_t_zerr}" "" "functions in which TRAPZERR fired"
+}
+
 test_perf_nonrepo() {
   if [[ ${EMJAY_TEST_SKIP_PERF-} == 1 ]]; then
     print -r -- "  # skipped: EMJAY_TEST_SKIP_PERF=1"

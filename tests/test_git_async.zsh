@@ -135,4 +135,180 @@ test_reqid_increments() {
   done
 }
 
+# ------------------------------------------------------------ review fixes
+
+zmodload zsh/zselect
+
+# _t_wait_ready <label>: block (up to 10 s) until the pending worker's pipe is
+# readable, i.e. it has written its payload, but leave it undrained.
+_t_wait_ready() {
+  local -a reply
+  if (( _emjay_git_fd <= 0 )); then
+    _t_fail "$1: wait needs a pending request" "_emjay_git_fd > 0" "$_emjay_git_fd"
+    return 1
+  fi
+  zselect -t 1000 -r $_emjay_git_fd || _t_fail "$1: worker pipe readable within 10 s" readable timeout
+}
+
+test_cancel_spares_finished_worker_pid() {               # M1
+  _t_async_setup
+  cd $TT/A
+  _emjay_precmd
+  _t_wait_ready "A"
+  # The worker has written its payload and is gone; pretend its pid was reused
+  # by an unrelated process (not our child, so a TERM would really end it).
+  local decoy
+  decoy=$( sleep 30 >/dev/null 2>&1 & print -r -- $! )
+  assert_match "$decoy" '<->' "decoy pid"
+  _emjay_git_pid=$decoy
+  _emjay_git_cancel
+  sleep 0.3
+  kill -0 $decoy 2>/dev/null
+  assert_eq "$?" 0 "a process holding the finished worker's (reused) pid survives _emjay_git_cancel"
+  kill $decoy 2>/dev/null
+  return 0
+}
+
+test_cancel_applies_finished_result_same_repo() {        # M1: "cd slowrepo; long-command"
+  _t_async_setup
+  cd $TT/A
+  _emjay_precmd
+  _t_seg_is "" "A, first precmd"
+  _t_wait_ready "A"
+  _emjay_precmd           # the callback never ran (a command was running)
+  _t_seg_is "$ALPHA" "A, next precmd shows the finished result at once"
+  _t_pending "A, next precmd"
+  _t_drain "A refresh"
+  _t_seg_is "$ALPHA" "A after the refresh"
+}
+
+test_cancel_discards_finished_result_other_repo() {      # M1
+  _t_async_setup
+  cd $TT/A
+  _emjay_precmd
+  _t_wait_ready "A"
+  builtin cd -q $TT/B     # -q: no chpwd hook, so precmd is first to see the move
+  _emjay_precmd
+  _t_seg_is "" "B, with A's finished result unread"
+  assert_not_contains "$_emjay_prompt" alpha "B: _emjay_prompt"
+  _t_drain "B"
+  _t_seg_is "$BETA" "B drained"
+}
+
+test_worker_pid_line_not_evaluated() {                   # M1: pid read into a validated scalar
+  _t_async_setup
+  cd $TT/A
+  _emjay_git_worker() {
+    print -r -- "path[\$(: > $TT/pwned)]"
+    print -r -- "$1"$'\nrepo=0'
+  }
+  _emjay_precmd
+  assert_eq "$_emjay_git_pid" 0 "_emjay_git_pid after a non-numeric pid line"
+  _t_drain "A"
+  assert_fail test -e $TT/pwned
+}
+
+test_callback_drops_result_after_cd_without_precmd() {   # m1: a widget ran cd + reset-prompt
+  _t_async_setup
+  cd $TT/A
+  _emjay_precmd
+  _t_drain "A"
+  _emjay_precmd           # refresh for A pending
+  builtin cd -q $TT/B     # no precmd, and -q skips chpwd as well
+  _t_drain "A's late result while in B"
+  _t_seg_is "" "B after A's late result"
+  assert_eq "${#_emjay_git}" 0 "\${#_emjay_git} after A's late result arrived in B"
+  assert_not_contains "$_emjay_prompt" alpha "_emjay_prompt after A's late result arrived in B"
+}
+
+test_chpwd_clears_git_segment() {                        # m1: chpwd hook
+  _t_async_setup
+  cd $TT/A
+  _emjay_precmd
+  _t_drain "A"
+  _emjay_precmd           # refresh for A pending
+  cd $TT/B                # chpwd only, no precmd
+  _t_seg_is "" "right after cd A -> B (chpwd, no precmd)"
+  assert_not_contains "$_emjay_prompt" alpha "_emjay_prompt right after cd A -> B"
+  assert_eq "$_emjay_git_fd" 0 "A's pending request cancelled by chpwd"
+  assert_eq "$_emjay_git_key" "$TT/B" "_emjay_git_key after chpwd"
+  cd $TT/A
+  _emjay_precmd
+  _t_drain "A again"
+  cd $TT/A/sub            # same repo: chpwd keeps the segment
+  _t_seg_is "$ALPHA" "after cd A -> A/sub"
+}
+
+test_zle_busy_decision() {                               # m3: when to defer the redraw
+  local w
+  for w in expand-or-complete complete-word menu-complete menu-select menu-expand-or-complete \
+           reverse-menu-complete history-search-backward; do
+    ( LASTWIDGET=$w ISEARCHMATCH_ACTIVE=0; _emjay_zle_busy )
+    assert_eq "$?" 0 "_emjay_zle_busy with LASTWIDGET=$w"
+  done
+  # an incremental search that has ended no longer blocks the redraw
+  for w in self-insert accept-line vi-cmd-mode backward-delete-char zle-line-init \
+           history-incremental-search-backward ''; do
+    ( LASTWIDGET=$w ISEARCHMATCH_ACTIVE=0; _emjay_zle_busy )
+    assert_eq "$?" 1 "_emjay_zle_busy with LASTWIDGET='$w'"
+  done
+  ( LASTWIDGET=zle-line-init ISEARCHMATCH_ACTIVE=1; _emjay_zle_busy )
+  assert_eq "$?" 0 "_emjay_zle_busy with ISEARCHMATCH_ACTIVE=1"
+}
+
+test_callback_defers_redraw_when_busy() {                # m3: data applied, redraw deferred
+  _t_async_setup
+  cd $TT/A
+  _emjay_precmd
+  LASTWIDGET=expand-or-complete
+  _t_drain "A during completion"
+  _t_seg_is "$ALPHA" "result applied during completion"
+  assert_eq "$_emjay_redraw_pending" 1 "_emjay_redraw_pending after a callback during completion"
+  _emjay_line_pre_redraw  # still completing: keep waiting
+  assert_eq "$_emjay_redraw_pending" 1 "pre-redraw hook while still completing"
+  LASTWIDGET=self-insert
+  _emjay_line_pre_redraw  # completion over: the hook does the deferred reset-prompt
+  assert_eq "$_emjay_redraw_pending" 0 "pre-redraw hook after completion ended"
+  cd $TT/B
+  _emjay_precmd
+  _t_drain "B while typing"
+  assert_eq "$_emjay_redraw_pending" 0 "no deferral while typing"
+  _emjay_redraw_pending=1
+  _emjay_precmd
+  assert_eq "$_emjay_redraw_pending" 0 "precmd clears a pending redraw"
+}
+
+test_cancelled_worker_leaves_no_git_running() {          # m8: no job control in this shell
+  _t_async_setup
+  [[ -o monitor ]] && unsetopt monitor
+  local real=$commands[git]
+  mkdir -p $TT/slowbin
+  print -r -- "#!/bin/sh
+case \"\$*\" in *status*) echo \$\$ >> '$TT/status.pids'; exec sleep 30 ;; esac
+exec '$real' \"\$@\"" > $TT/slowbin/git
+  chmod +x $TT/slowbin/git
+  path=($TT/slowbin $path)
+  rehash
+  cd $TT/A
+  _emjay_precmd
+  local -i i
+  for (( i = 0; i < 200; i++ )); do [[ -s $TT/status.pids ]] && break; sleep 0.05; done
+  assert_ok test -s $TT/status.pids
+  local d
+  for d in B A B A; do
+    cd $TT/$d
+    _emjay_precmd
+    sleep 0.2
+  done
+  _emjay_git_cancel
+  sleep 0.5
+  local p
+  local -a pids alive
+  pids=(${(f)"$(<$TT/status.pids)"})
+  for p in $pids; do kill -0 $p 2>/dev/null && alive+=($p); done
+  assert_eq "${alive[*]}" "" "slow 'git status' pids (of ${#pids}) still running after their workers were cancelled"
+  (( $#alive )) && kill $alive 2>/dev/null
+  return 0
+}
+
 run_tests

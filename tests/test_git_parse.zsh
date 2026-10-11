@@ -390,4 +390,51 @@ test_apply_rejects_garbage() {
   assert_eq "${_emjay_git[branch]}" keep "apply of garbage: _emjay_git[branch] unchanged"
 }
 
+# ------------------------------------------------------------ review fixes
+
+test_render_control_chars() {                    # m4: no raw control bytes reach the terminal
+  _emjay_git=(repo 1 bare 0 branch $'a\e[31mb\a' detached 0 op $'X\eY\r')
+  _emjay_render_git
+  assert_not_contains "$_emjay_seg_git" $'\e' "raw git segment contains ESC"
+  assert_not_contains "$_emjay_seg_git" $'\a' "raw git segment contains BEL"
+  assert_not_contains "$_emjay_seg_git" $'\r' "raw git segment contains CR"
+  seg_text git
+  assert_eq "$REPLY" "${UG[branch]} a?[31mb? ${UG[clean]} X?Y?" "git segment with control characters"
+}
+
+test_op_counters_must_be_numbers() {             # m4: rebase counters come from files
+  mkdir -p $TT/g/rebase-merge $TT/h/rebase-apply
+  print -rn -- $'\e[2J' > $TT/g/rebase-merge/msgnum
+  print -r -- 5 > $TT/g/rebase-merge/end
+  _emjay_git_operation $TT/g
+  assert_eq "$REPLY" REBASE "rebase-merge with an escape sequence in msgnum"
+  print -r -- 1 > $TT/h/rebase-apply/next
+  print -r -- '3x' > $TT/h/rebase-apply/last
+  _emjay_git_operation $TT/h
+  assert_eq "$REPLY" REBASE "rebase-apply with last=3x"
+}
+
+test_rebase_head_name() {                        # nit: branch being rebased
+  mkdir -p $TT/g/rebase-merge $TT/h/rebase-apply $TT/d/rebase-merge
+  print -r -- refs/heads/feature/x > $TT/g/rebase-merge/head-name
+  _emjay_git_rebase_head $TT/g
+  assert_eq "$REPLY" feature/x "rebase-merge/head-name"
+  print -r -- refs/heads/topic > $TT/h/rebase-apply/head-name
+  _emjay_git_rebase_head $TT/h
+  assert_eq "$REPLY" topic "rebase-apply/head-name"
+  print -r -- 'detached HEAD' > $TT/d/rebase-merge/head-name
+  _emjay_git_rebase_head $TT/d
+  assert_eq "$REPLY" "" "head-name of a rebased detached HEAD"
+  _emjay_git_rebase_head $TT/nonexistent
+  assert_eq "$REPLY" "" "no rebase in progress"
+}
+
+test_read_head_reftable_placeholder() {          # nit: reftable HEAD file
+  mkdir -p $TT/g
+  print -r -- 'ref: refs/heads/.invalid' > $TT/g/HEAD
+  _emjay_git=(branch keep detached 0)
+  assert_fail _emjay_git_read_head $TT/g
+  assert_eq "${_emjay_git[branch]}" keep "_emjay_git[branch] after reading a reftable HEAD placeholder"
+}
+
 run_tests
